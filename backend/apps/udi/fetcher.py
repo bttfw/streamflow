@@ -32,6 +32,10 @@ from apps.core.auth import (
 
 logger = setup_logging(__name__)
 
+GET_TIMEOUT_SECONDS = 45
+GET_RETRY_ATTEMPTS = 3
+GET_RETRY_BACKOFF_SECONDS = 2
+
 
 @dataclass
 class FetchResult:
@@ -290,50 +294,68 @@ class UDIFetcher:
         Returns:
             JSON response data or None if failed
         """
-        try:
-            start_time = time.time()
-            log_api_request(logger, "GET", url)
-            resp = requests.get(url, headers=_get_auth_headers(), timeout=30)
-            elapsed = time.time() - start_time
-            log_api_response(logger, "GET", url, resp.status_code, elapsed)
-            self._record_request_timing(
-                method="GET",
-                url=url,
-                elapsed=elapsed,
-                status_code=resp.status_code,
-                success=resp.status_code < 400,
-            )
-            
-            resp.raise_for_status()
-            return resp.json()
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                if _refresh_token():
-                    logger.info("Retrying request with new token...")
-                    retry_start = time.time()
-                    resp = requests.get(url, headers=_get_auth_headers(), timeout=30)
-                    retry_elapsed = time.time() - retry_start
-                    self._record_request_timing(
-                        method="GET",
-                        url=url,
-                        elapsed=retry_elapsed,
-                        status_code=resp.status_code,
-                        success=resp.status_code < 400,
+        for attempt in range(1, GET_RETRY_ATTEMPTS + 1):
+            try:
+                start_time = time.time()
+                log_api_request(logger, "GET", url)
+                resp = requests.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
+                elapsed = time.time() - start_time
+                log_api_response(logger, "GET", url, resp.status_code, elapsed)
+                self._record_request_timing(
+                    method="GET",
+                    url=url,
+                    elapsed=elapsed,
+                    status_code=resp.status_code,
+                    success=resp.status_code < 400,
+                )
+
+                resp.raise_for_status()
+                return resp.json()
+            except requests.exceptions.HTTPError as e:
+                status_code = e.response.status_code if e.response is not None else None
+                if status_code == 401:
+                    if _refresh_token():
+                        logger.info("Retrying request with new token...")
+                        retry_start = time.time()
+                        resp = requests.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
+                        retry_elapsed = time.time() - retry_start
+                        self._record_request_timing(
+                            method="GET",
+                            url=url,
+                            elapsed=retry_elapsed,
+                            status_code=resp.status_code,
+                            success=resp.status_code < 400,
+                        )
+                        resp.raise_for_status()
+                        return resp.json()
+
+                retryable = status_code in {429, 500, 502, 503, 504}
+                if retryable and attempt < GET_RETRY_ATTEMPTS:
+                    logger.warning(
+                        f"Transient HTTP {status_code} fetching {url}; retrying "
+                        f"({attempt}/{GET_RETRY_ATTEMPTS})"
                     )
-                    resp.raise_for_status()
-                    return resp.json()
-            logger.error(f"Error fetching {url}: {e}")
-            return None
-        except requests.exceptions.RequestException as e:
-            self._record_request_timing(
-                method="GET",
-                url=url,
-                elapsed=time.time() - start_time if 'start_time' in locals() else 0,
-                status_code=None,
-                success=False,
-            )
-            logger.error(f"Error fetching {url}: {e}")
-            return None
+                    time.sleep(GET_RETRY_BACKOFF_SECONDS * attempt)
+                    continue
+                logger.error(f"Error fetching {url}: {e}")
+                return None
+            except requests.exceptions.RequestException as e:
+                self._record_request_timing(
+                    method="GET",
+                    url=url,
+                    elapsed=time.time() - start_time if 'start_time' in locals() else 0,
+                    status_code=None,
+                    success=False,
+                )
+                if attempt < GET_RETRY_ATTEMPTS:
+                    logger.warning(
+                        f"Transient error fetching {url}: {e}; retrying "
+                        f"({attempt}/{GET_RETRY_ATTEMPTS})"
+                    )
+                    time.sleep(GET_RETRY_BACKOFF_SECONDS * attempt)
+                    continue
+                logger.error(f"Error fetching {url}: {e}")
+                return None
     
     def _post_url(self, url: str, json_body: Any) -> Optional[Any]:
         """POST JSON to a URL with authentication and one auto-retry on 401.
