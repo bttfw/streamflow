@@ -1167,6 +1167,8 @@ class StreamCheckerService:
         payload = {
             'success': False,
             'error': 'connectivity_guard',
+            'aborted': True,
+            'skip_reason': 'connectivity_guard',
             'message': result.message,
             'connectivity_guard': result.to_dict(),
         }
