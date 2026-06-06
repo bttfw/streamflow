@@ -240,6 +240,25 @@ def update_auto_create_rule_response(
         return error_response("Internal Server Error", status_code=500, code="internal_error")
 
 
+def refresh_auto_create_rules_response(
+    *,
+    get_scheduling_service: Callable[[], Any],
+    scheduled_event_processor_wake: Any = None,
+):
+    """Refresh auto-create rule matches and return the scheduling summary."""
+    try:
+        service = get_scheduling_service()
+        result = service.match_programs_to_rules(force_refresh=True)
+
+        if scheduled_event_processor_wake is not None and hasattr(scheduled_event_processor_wake, "set"):
+            scheduled_event_processor_wake.set()
+
+        return jsonify(result), 200
+    except Exception as exc:
+        logger.error(f"Error refreshing auto-create rules: {exc}", exc_info=True)
+        return error_response("Internal Server Error", status_code=500, code="internal_error")
+
+
 def test_auto_create_rule_response(*, payload: Any, get_scheduling_service: Callable[[], Any]):
     """Handle regex testing against EPG data for selected channels and groups."""
     from apps.automation.scheduling_service import NoTvgIdError

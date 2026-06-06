@@ -178,6 +178,7 @@ from apps.api.scheduling_handlers import (
     get_udi_refresh_schedule_response,
     import_auto_create_rules_response,
     process_due_scheduled_events_response,
+    refresh_auto_create_rules_response,
     start_epg_refresh_processor_api_response,
     start_scheduled_event_processor_api_response,
     start_udi_refresh_processor_api_response,
@@ -1536,6 +1537,16 @@ def update_auto_create_rule(rule_id):
     return update_auto_create_rule_response(
         rule_id=rule_id,
         payload=request.get_json(silent=True),
+        get_scheduling_service=get_scheduling_service,
+        scheduled_event_processor_wake=scheduled_event_processor_wake,
+    )
+
+
+@app.route('/api/scheduling/auto-create-rules/refresh', methods=['POST'])
+@log_function_call
+def refresh_auto_create_rules():
+    """Refresh auto-create rules and return a match/scheduling summary."""
+    return refresh_auto_create_rules_response(
         get_scheduling_service=get_scheduling_service,
         scheduled_event_processor_wake=scheduled_event_processor_wake,
     )

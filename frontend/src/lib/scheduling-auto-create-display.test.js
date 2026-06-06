@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest'
 import {
+  getAutoCreateRuleRefreshToast,
   getAutoCreateRuleTestDiagnostics,
   getAutoCreateRuleTestToast,
 } from './scheduling-auto-create-display.js'
@@ -49,7 +50,7 @@ describe('getAutoCreateRuleTestToast', () => {
       selectedChannelCount: 0,
     })).toEqual({
       title: 'Partial Matches',
-      description: '2 matching programs found on 1/4 tested channels (1 without EPG programs, 1 with EPG titles that did not match).',
+      description: '2 matching programs found on 1/4 tested channels (1 without EPG programs, 1 with EPG titles that did not match). Example titles are shown in diagnostics.',
       variant: 'default',
     })
   })
@@ -175,5 +176,43 @@ describe('getAutoCreateRuleTestToast', () => {
         channels: [{ id: 9, name: 'No Time' }],
       },
     ])
+  })
+})
+
+describe('getAutoCreateRuleRefreshToast', () => {
+  it('explains why only future matches remain visible after refresh', () => {
+    expect(getAutoCreateRuleRefreshToast({
+      responseData: {
+        matched: 25,
+        created: 6,
+        updated: 1,
+        skipped: 2,
+        future_matches: 6,
+        due_now_matches: 12,
+        ended_matches: 5,
+        already_checked_matches: 2,
+      },
+      eventCountAfterRefresh: 6,
+    })).toEqual({
+      title: 'Auto-Create Refresh',
+      description: '25 EPG title matches: 6 visible in Scheduled Events, 12 due now and moved to the Stream Checker queue, 5 already ended, 2 already checked (6 created, 1 updated, 2 unchanged). Matches that are due now, ended, already checked, or otherwise unschedulable will not remain in Scheduled Events.',
+      variant: 'default',
+    })
+  })
+
+  it('reports a refresh with no matching EPG titles', () => {
+    expect(getAutoCreateRuleRefreshToast({
+      responseData: {
+        matched: 0,
+        created: 0,
+        updated: 0,
+        skipped: 0,
+      },
+      eventCountAfterRefresh: 0,
+    })).toEqual({
+      title: 'Auto-Create Refresh',
+      description: 'No matching EPG titles were found for the current auto-create rules.',
+      variant: 'default',
+    })
   })
 })

@@ -86,3 +86,38 @@ def test_auto_create_regex_test_uses_rule_wide_preview_for_single_channel():
         force_refresh=True,
     )
     service.test_regex_against_epg.assert_not_called()
+
+
+def test_refresh_auto_create_rules_returns_match_summary_and_wakes_processor():
+    app = Flask(__name__)
+
+    class Service:
+        def __init__(self):
+            self.match_calls = []
+
+        def match_programs_to_rules(self, **kwargs):
+            self.match_calls.append(kwargs)
+            return {
+                "created": 2,
+                "updated": 1,
+                "skipped": 3,
+                "matched": 10,
+                "future_matches": 2,
+                "due_now_matches": 4,
+                "ended_matches": 4,
+            }
+
+    service = Service()
+    wake = Mock()
+
+    with app.app_context():
+        response, status = scheduling_handlers.refresh_auto_create_rules_response(
+            get_scheduling_service=lambda: service,
+            scheduled_event_processor_wake=wake,
+        )
+
+    assert status == 200
+    assert response.get_json()["matched"] == 10
+    assert response.get_json()["due_now_matches"] == 4
+    assert service.match_calls == [{"force_refresh": True}]
+    wake.set.assert_called_once_with()

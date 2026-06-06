@@ -16,6 +16,7 @@ import { schedulingAPI, channelsAPI, automationAPI } from '@/services/api.js'
 import { Plus, Trash2, Clock, Calendar, RefreshCw, Loader2, Settings, ChevronsUpDown, Check, Edit, Download, Upload, FileJson } from 'lucide-react'
 import { cn } from '@/lib/utils.js'
 import {
+  getAutoCreateRuleRefreshToast,
   getAutoCreateRuleTestDiagnostics,
   getAutoCreateRuleTestToast,
 } from '@/lib/scheduling-auto-create-display.js'
@@ -145,10 +146,22 @@ export default function Scheduling() {
         schedulingAPI.getAutoCreateRules()
       ])
 
-      setEvents(eventsResponse.data || [])
-      setChannels(channelsResponse.data || [])
-      setChannelGroups(channelGroupsResponse.data || [])
-      setAutoCreateRules(rulesResponse.data || [])
+      const loadedEvents = eventsResponse.data || []
+      const loadedChannels = channelsResponse.data || []
+      const loadedChannelGroups = channelGroupsResponse.data || []
+      const loadedRules = rulesResponse.data || []
+
+      setEvents(loadedEvents)
+      setChannels(loadedChannels)
+      setChannelGroups(loadedChannelGroups)
+      setAutoCreateRules(loadedRules)
+
+      return {
+        events: loadedEvents,
+        channels: loadedChannels,
+        channelGroups: loadedChannelGroups,
+        autoCreateRules: loadedRules,
+      }
     } catch (err) {
       console.error('Failed to load scheduling data:', err)
       toast({
@@ -343,8 +356,16 @@ export default function Scheduling() {
   const handleRefresh = async () => {
     try {
       setLoading(true)
-      await schedulingAPI.getEPGGrid(true)
-      await loadData()
+      const refreshResponse = await schedulingAPI.refreshAutoCreateRules()
+      const refreshedData = await loadData()
+      const visibleAutoCreateEvents = (refreshedData?.events || []).filter((event) => event.auto_created).length
+      const refreshToast = getAutoCreateRuleRefreshToast({
+        responseData: refreshResponse.data,
+        eventCountAfterRefresh: visibleAutoCreateEvents,
+      })
+      if (refreshToast) {
+        toast(refreshToast)
+      }
     } catch (err) {
       console.error('Failed to refresh scheduling data:', err)
       toast({

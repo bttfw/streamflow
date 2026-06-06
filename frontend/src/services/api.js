@@ -292,6 +292,7 @@ export const schedulingAPI = {
   createAutoCreateRule: (ruleData) => api.post('/scheduling/auto-create-rules', ruleData),
   updateAutoCreateRule: (ruleId, ruleData) => api.put(`/scheduling/auto-create-rules/${ruleId}`, ruleData),
   deleteAutoCreateRule: (ruleId) => api.delete(`/scheduling/auto-create-rules/${ruleId}`),
+  refreshAutoCreateRules: () => api.post('/scheduling/auto-create-rules/refresh'),
   testAutoCreateRule: (testData) => api.post('/scheduling/auto-create-rules/test', testData),
   exportAutoCreateRules: () => api.get('/scheduling/auto-create-rules/export'),
   importAutoCreateRules: (rulesData) => api.post('/scheduling/auto-create-rules/import', rulesData),

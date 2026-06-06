@@ -128,12 +128,69 @@ export const getAutoCreateRuleTestToast = ({
 
     return {
       title: 'Partial Matches',
-      description: `${matches} matching ${plural(matches, 'program')} found on ${channelsWithMatches}/${channelsTested} tested ${plural(channelsTested, 'channel')}${reasonSuffix}.`,
+      description: `${matches} matching ${plural(matches, 'program')} found on ${channelsWithMatches}/${channelsTested} tested ${plural(channelsTested, 'channel')}${reasonSuffix}. Example titles are shown in diagnostics.`,
       variant: 'default',
     }
   }
 
   return null
+}
+
+export const getAutoCreateRuleRefreshToast = ({
+  responseData = {},
+  eventCountAfterRefresh = null,
+} = {}) => {
+  const data = responseData || {}
+  const matched = finiteNumber(data.matched)
+  const created = finiteNumber(data.created)
+  const updated = finiteNumber(data.updated)
+  const skipped = finiteNumber(data.skipped)
+  const futureMatches = finiteNumber(data.future_matches)
+  const dueNowMatches = finiteNumber(data.due_now_matches)
+  const endedMatches = finiteNumber(data.ended_matches)
+  const alreadyCheckedMatches = finiteNumber(data.already_checked_matches)
+  const missingTimeMatches = finiteNumber(data.missing_time_matches)
+  const invalidTimeMatches = finiteNumber(data.invalid_time_matches)
+  const hiddenMatches = dueNowMatches + endedMatches + alreadyCheckedMatches + missingTimeMatches + invalidTimeMatches
+  const changedEvents = created + updated
+  const visibleCount = Number.isFinite(Number(eventCountAfterRefresh))
+    ? finiteNumber(eventCountAfterRefresh)
+    : futureMatches
+
+  if (matched === 0 && changedEvents === 0) {
+    return {
+      title: 'Auto-Create Refresh',
+      description: 'No matching EPG titles were found for the current auto-create rules.',
+      variant: 'default',
+    }
+  }
+
+  const schedulingParts = [
+    `${visibleCount} visible in Scheduled Events`,
+    dueNowMatches > 0 ? `${dueNowMatches} due now and moved to the Stream Checker queue` : '',
+    endedMatches > 0 ? `${endedMatches} already ended` : '',
+    alreadyCheckedMatches > 0 ? `${alreadyCheckedMatches} already checked` : '',
+    missingTimeMatches > 0 ? `${missingTimeMatches} missing start/end time` : '',
+    invalidTimeMatches > 0 ? `${invalidTimeMatches} with invalid start/end time` : '',
+  ]
+
+  const changeParts = [
+    created > 0 ? `${created} created` : '',
+    updated > 0 ? `${updated} updated` : '',
+    skipped > 0 ? `${skipped} unchanged` : '',
+  ]
+
+  const schedulingText = compactReasonList(schedulingParts)
+  const changeText = compactReasonList(changeParts)
+  const hiddenText = hiddenMatches > 0
+    ? ' Matches that are due now, ended, already checked, or otherwise unschedulable will not remain in Scheduled Events.'
+    : ''
+
+  return {
+    title: 'Auto-Create Refresh',
+    description: `${matched} EPG title ${plural(matched, 'match', 'matches')}: ${schedulingText}${changeText ? ` (${changeText})` : ''}.${hiddenText}`,
+    variant: 'default',
+  }
 }
 
 export const getAutoCreateRuleTestDiagnostics = (responseData = {}) => {
