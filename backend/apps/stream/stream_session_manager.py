@@ -161,6 +161,10 @@ class SessionInfo:
     # Auto-creation source (for tracking if created by rules)
     auto_created: bool = False
     auto_create_rule_id: Optional[str] = None
+    # Metrics backend: 'ffmpeg' (per-stream ffmpeg probe) or 'openstream' (swarm
+    # health polled from an OpenStream server). openstream sessions skip ffmpeg,
+    # screenshots and CV sidecars.
+    session_type: str = 'ffmpeg'
     # Detection toggles
     enable_looping_detection: bool = True
     enable_logo_detection: bool = True
@@ -472,11 +476,13 @@ class StreamSessionManager:
             serialized = self._serialize_session(session_info)
             base_raw = {key: value for key, value in serialized.items() if key != 'streams'}
             base_raw['channel_session_id'] = session_id
+            session_type = getattr(session_info, 'session_type', 'ffmpeg')
             desired_rows[session_id] = {
                 'stream_id': None,
                 'status': 'active' if session_info.is_active else 'stopped',
                 'current_speed': 0.0,
                 'current_bitrate': 0,
+                'session_type': session_type,
                 'raw_info': base_raw,
             }
 
@@ -490,6 +496,7 @@ class StreamSessionManager:
                     'status': stream_info.status if not isinstance(stream_info, dict) else stream_info.get('status', 'review'),
                     'current_speed': getattr(stream_info, 'current_speed', 0.0) if not isinstance(stream_info, dict) else stream_info.get('current_speed', 0.0),
                     'current_bitrate': getattr(stream_info, 'bitrate', 0) if not isinstance(stream_info, dict) else stream_info.get('bitrate', 0),
+                    'session_type': session_type,
                     'raw_info': item_raw,
                 }
 
@@ -583,6 +590,7 @@ class StreamSessionManager:
                       match_by_tvg_id: bool = False,
                       enable_looping_detection: bool = True,
                       enable_logo_detection: bool = True,
+                      session_type: str = 'ffmpeg',
                       **kwargs) -> str:
         """
         Create a new monitoring session.
@@ -604,6 +612,13 @@ class StreamSessionManager:
             Session ID
         """
         self._ensure_runtime_state()
+
+        # OpenStream sessions source health from the swarm, not decoded video, so
+        # the ffmpeg-only CV detectors don't apply.
+        session_type = session_type if session_type in ('ffmpeg', 'openstream') else 'ffmpeg'
+        if session_type == 'openstream':
+            enable_looping_detection = False
+            enable_logo_detection = False
 
         # Check for existing active session for this channel
         if not allow_duplicate_channel and self.is_channel_in_active_session(channel_id):
@@ -697,6 +712,7 @@ class StreamSessionManager:
             match_by_tvg_id=match_by_tvg_id,
             enable_looping_detection=enable_looping_detection,
             enable_logo_detection=enable_logo_detection,
+            session_type=session_type,
             **kwargs
         )
         

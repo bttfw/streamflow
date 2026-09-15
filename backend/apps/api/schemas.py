@@ -23,6 +23,18 @@ def _parse_bool(value: Any, *, field_name: str) -> bool:
     raise ValidationError(f"{field_name} must be a boolean")
 
 
+_VALID_SESSION_TYPES = {"ffmpeg", "openstream"}
+
+
+def _parse_session_type(value: Any) -> str:
+    """Validate the monitoring backend; defaults to 'ffmpeg' when omitted."""
+    if value in (None, ""):
+        return "ffmpeg"
+    if isinstance(value, str) and value.strip().lower() in _VALID_SESSION_TYPES:
+        return value.strip().lower()
+    raise ValidationError("session_type must be one of: ffmpeg, openstream")
+
+
 def _ensure_non_empty_list(value: Any, *, field_name: str) -> List[Any]:
     if not isinstance(value, list) or len(value) == 0:
         raise ValidationError(f"{field_name} must be a non-empty list")
@@ -410,6 +422,7 @@ class StreamSessionCreateSchema:
     auto_create_rule_id: Optional[str]
     enable_looping_detection: bool
     enable_logo_detection: bool
+    session_type: str
 
     @classmethod
     def from_payload(cls, payload: Any) -> "StreamSessionCreateSchema":
@@ -444,6 +457,8 @@ class StreamSessionCreateSchema:
         auto_create_rule_id_raw = data.get("auto_create_rule_id")
         auto_create_rule_id = None if auto_create_rule_id_raw in (None, "") else str(auto_create_rule_id_raw)
 
+        session_type = _parse_session_type(data.get("session_type"))
+
         return cls(
             channel_id=channel_id,
             regex_filter=regex_filter,
@@ -455,6 +470,7 @@ class StreamSessionCreateSchema:
             auto_create_rule_id=auto_create_rule_id,
             enable_looping_detection=enable_looping_detection,
             enable_logo_detection=enable_logo_detection,
+            session_type=session_type,
         )
 
 
@@ -467,6 +483,7 @@ class GroupStreamSessionsCreateSchema:
     timeout_ms: int
     enable_looping_detection: bool
     enable_logo_detection: bool
+    session_type: str
 
     @classmethod
     def from_payload(cls, payload: Any) -> "GroupStreamSessionsCreateSchema":
@@ -502,6 +519,7 @@ class GroupStreamSessionsCreateSchema:
             enable_logo_detection=_parse_bool(
                 data.get("enable_logo_detection", True), field_name="enable_logo_detection"
             ),
+            session_type=_parse_session_type(data.get("session_type")),
         )
 
 

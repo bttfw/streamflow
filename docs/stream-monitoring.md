@@ -115,3 +115,42 @@ The system is optimized for high-performance monitoring:
 - **Logo Verify Status**: Shows CV status (SUCCESS/FAILED/PENDING) and failure counts.
 - **Quarantine Badges**: Shows specific reasons like `Looping (15.5s)` or `Logo Mismatch` (with failing screenshot).
 - **Live Previews**: Horizontally-scrolling carousel of live screenshots across all active streams.
+
+---
+
+## 8. Session Types: FFmpeg vs OpenStream
+A monitoring session has a **backend** (`session_type`) that decides how each stream's
+reliability is measured. Both feed the *same* Capped Sliding Window, ranking and
+Dispatcharr reordering — only the measurement source differs.
+
+| | `ffmpeg` (default) | `openstream` |
+|---|---|---|
+| Source of truth | A local ffmpeg process decoding each stream | An [OpenStream](https://github.com/krinkuto11/openstream) server's swarm-health API |
+| Measures | speed, bitrate, FPS, buffering; loop + logo CV | keep-up margin, seeder redundancy, peer health |
+| Cost | One ffmpeg + CV sidecars **per stream** | A few small HTTP polls per session (no decode) |
+| Screenshots / logo / loop | Yes | No (there are no decoded frames) |
+| Best for | Any HTTP/HLS stream | **AceStream** channels served through an OpenStream gateway |
+
+### How the OpenStream backend works
+For an `openstream` session, each stream is handled by
+[`OpenStreamStreamMonitor`](../backend/apps/stream/openstream_monitor.py), which
+**duck-types the ffmpeg monitor** so nothing downstream changes:
+
+1. The 40-hex AceStream **content id** and the **API base** are parsed straight from
+   the Dispatcharr stream URL (`http://host:6878/ace/getstream?id=<id>` or the short
+   `/<id>` form) — no separate server config.
+2. On start it admits the id to the OpenStream server (`POST /api/streams`).
+3. It polls `GET /api/streams/<id>` (~2 s) and maps the returned health onto
+   ffmpeg-style stats: `speed ← keepUpMargin`, `is_alive ← state != "dead"`,
+   `is_buffering ← state ∈ {warming, draining, stalled}`, `bitrate ← trueBitrateKbps`.
+4. Those feed `CappedSlidingWindow.add_measurement(is_healthy, speed)` exactly as
+   ffmpeg speed would — so the reliability score, review/quarantine lifecycle and
+   Dispatcharr stream ordering all work unchanged.
+
+Only a reported `state == "dead"` marks a source fatally dead; transient poll
+failures (e.g. the OpenStream server briefly unreachable) never evict streams. On
+session stop the ids are released (`POST /api/actions {"op":"remove"}`).
+
+**Choosing it:** in *Create Monitoring Session*, set **Monitoring Backend →
+OpenStream swarm health** (the CV detection toggles hide, since they don't apply).
+Or pass `"session_type": "openstream"` to `POST /api/stream-sessions`.

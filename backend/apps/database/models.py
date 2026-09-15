@@ -233,6 +233,9 @@ class MonitoringSession(Base):
     current_speed = Column(Float, default=0.0)
     current_bitrate = Column(Integer, default=0)
     raw_info = Column(JSON, nullable=True)
+    # Metrics backend: 'ffmpeg' (per-stream ffmpeg probe) or 'openstream' (swarm
+    # health from an OpenStream server). Determines how reliability is sourced.
+    session_type = Column(String(20), default='ffmpeg')
 
 
 class DeadStream(Base):

@@ -69,6 +69,7 @@ def get_stream_sessions_response(*, status: str, get_session_manager: Callable[[
                 "channel_tvg_id": session.channel_tvg_id,
                 "auto_created": session.auto_created,
                 "auto_create_rule_id": session.auto_create_rule_id,
+                "session_type": getattr(session, "session_type", "ffmpeg"),
             }
             sessions_data.append(session_dict)
 
@@ -123,6 +124,7 @@ def create_stream_session_response(
             match_by_tvg_id=match_by_tvg_id,
             enable_looping_detection=data.enable_looping_detection,
             enable_logo_detection=data.enable_logo_detection,
+            session_type=data.session_type,
         )
 
         return jsonify({"session_id": session_id, "message": "Session created successfully"}), 201
@@ -204,6 +206,7 @@ def create_group_stream_sessions_response(
                     match_by_tvg_id=match_by_tvg_id,
                     enable_looping_detection=data.enable_looping_detection,
                     enable_logo_detection=data.enable_logo_detection,
+                    session_type=data.session_type,
                 )
 
                 if session_manager.start_session(session_id):

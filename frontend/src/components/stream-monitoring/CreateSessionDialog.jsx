@@ -25,7 +25,8 @@ function CreateSessionDialog({ open, onOpenChange, onCreateSession }) {
     timeout_ms: 30000,
     autoStart: true,
     enable_looping_detection: true,
-    enable_logo_detection: true
+    enable_logo_detection: true,
+    session_type: 'ffmpeg'
   });
   const { toast } = useToast();
 
@@ -227,8 +228,33 @@ function CreateSessionDialog({ open, onOpenChange, onCreateSession }) {
                 </div>
               </div>
 
-              {/* Detection Toggles */}
-              <div className="border rounded-lg p-4 space-y-4 bg-muted/20">
+              {/* Monitoring backend */}
+              <div className="space-y-2">
+                <Label htmlFor="session-type">Monitoring Backend</Label>
+                <Select
+                  value={formData.session_type}
+                  onValueChange={(value) => handleChange('session_type', value)}
+                >
+                  <SelectTrigger id="session-type">
+                    <SelectValue />
+                  </SelectTrigger>
+                  <SelectContent>
+                    <SelectItem value="ffmpeg">FFmpeg probe (default)</SelectItem>
+                    <SelectItem value="openstream">OpenStream swarm health</SelectItem>
+                  </SelectContent>
+                </Select>
+                <p className="text-xs text-muted-foreground">
+                  {formData.session_type === 'openstream'
+                    ? 'AceStream sources: reliability comes from an OpenStream server (peer/keep-up health). No ffmpeg, screenshots or logo checks.'
+                    : 'Local ffmpeg probe with screenshot and logo verification.'}
+                </p>
+              </div>
+
+              {/* Detection Toggles (ffmpeg only — OpenStream has no decoded video) */}
+              <div
+                className="border rounded-lg p-4 space-y-4 bg-muted/20"
+                hidden={formData.session_type === 'openstream'}
+              >
                 <div className="flex items-center gap-2 text-sm font-medium mb-2">
                   <ShieldCheck className="h-4 w-4 text-primary" />
                   <h4>Detection Features</h4>

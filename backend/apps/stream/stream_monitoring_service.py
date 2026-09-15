@@ -29,6 +29,7 @@ from apps.stream.stream_session_manager import (
     StreamMetrics
 )
 from apps.stream.ffmpeg_stream_monitor import FFmpegStreamMonitor
+from apps.stream.openstream_monitor import OpenStreamStreamMonitor
 from apps.stream.stream_screenshot_service import get_screenshot_service
 from apps.stream.dead_streams_tracker import DeadStreamsTracker
 from apps.udi import get_udi_manager
@@ -525,6 +526,10 @@ class StreamMonitoringService:
             try:
                 active_sessions = self.session_manager.get_active_sessions()
                 for session in active_sessions:
+                    # OpenStream sessions monitor swarm health, not decoded video —
+                    # no frames to screenshot.
+                    if getattr(session, 'session_type', 'ffmpeg') == 'openstream':
+                        continue
                     self._check_screenshots(session.session_id)
                 time.sleep(SCREENSHOT_CHECK_INTERVAL)
             except Exception as e:
@@ -557,12 +562,19 @@ class StreamMonitoringService:
                 has_monitor = stream_id in monitors_dict
             
             if not has_monitor:
-                monitor = FFmpegStreamMonitor(
-                    url=stream_info.url,
-                    stream_id=stream_id,
-                    on_stats_update=lambda stats, sid=session_id, stid=stream_id: 
-                        self._on_stats_update(sid, stid, stats)
-                )
+                on_update = lambda stats, sid=session_id, stid=stream_id: \
+                    self._on_stats_update(sid, stid, stats)
+                if getattr(session, 'session_type', 'ffmpeg') == 'openstream':
+                    # Swarm health from an OpenStream server instead of a local
+                    # ffmpeg probe; duck-types FFmpegStreamMonitor so the rest of
+                    # the pipeline (reliability, ranking, Dispatcharr) is unchanged.
+                    monitor = OpenStreamStreamMonitor(
+                        url=stream_info.url, stream_id=stream_id, on_stats_update=on_update
+                    )
+                else:
+                    monitor = FFmpegStreamMonitor(
+                        url=stream_info.url, stream_id=stream_id, on_stats_update=on_update
+                    )
                 
                 if monitor.start():
                     with self._state_lock:
