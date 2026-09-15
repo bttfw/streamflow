@@ -126,7 +126,7 @@ Dispatcharr reordering — only the measurement source differs.
 | | `ffmpeg` (default) | `openstream` |
 |---|---|---|
 | Source of truth | A local ffmpeg process decoding each stream | An [OpenStream](https://github.com/krinkuto11/openstream) server's swarm-health API |
-| Measures | speed, bitrate, FPS, buffering; loop + logo CV | keep-up margin, seeder redundancy, peer health |
+| Measures | speed, bitrate, FPS, buffering; loop + logo CV | keep-up margin, reliability score, download rate, peers/seeders, latency |
 | Cost | One ffmpeg + CV sidecars **per stream** | A few small HTTP polls per session (no decode) |
 | Screenshots / logo / loop | Yes | No (there are no decoded frames) |
 | Best for | Any HTTP/HLS stream | **AceStream** channels served through an OpenStream gateway |
@@ -140,16 +140,35 @@ For an `openstream` session, each stream is handled by
    the Dispatcharr stream URL (`http://host:6878/ace/getstream?id=<id>` or the short
    `/<id>` form) — no separate server config.
 2. On start it admits the id to the OpenStream server (`POST /api/streams`).
-3. It polls `GET /api/streams/<id>` (~2 s) and maps the returned health onto
-   ffmpeg-style stats: `speed ← keepUpMargin`, `is_alive ← state != "dead"`,
-   `is_buffering ← state ∈ {warming, draining, stalled}`, `bitrate ← trueBitrateKbps`.
+3. It polls `GET /api/streams/<id>` (~2 s) and maps the returned session snapshot
+   onto ffmpeg-style stats: `speed ← health.keepUpMargin`, `is_alive ← state != "dead"`,
+   `is_buffering ← state ∈ {warming, draining, stalled}`, `bitrate ← health.trueBitrateKbps`.
 4. Those feed `CappedSlidingWindow.add_measurement(is_healthy, speed)` exactly as
    ffmpeg speed would — so the reliability score, review/quarantine lifecycle and
    Dispatcharr stream ordering all work unchanged.
 
+Besides the keep-up margin (which is deliberately noisy on a warm live pull), the
+snapshot also carries the **reliable swarm signals**, surfaced verbatim in the UI
+instead of the ffmpeg bitrate/FPS/quality columns:
+
+| StreamFlow field | Snapshot source | Meaning |
+|---|---|---|
+| `download_kbps` | top-level `kbps` | smoothed swarm download rate |
+| `peers` / `seeders` | top-level `peers` / `seeders` | connected peers / peers actively feeding us |
+| `swarm_reliability` | `health.reliabilityScore` | server's 0..1 EWMA rank key (the primary health signal) |
+| `latency_secs` | `health.latencySecs` | playback distance behind the live edge |
+| `swarm_state` | `health.state` | `dead`/`warming`/`healthy`/`draining`/`stalled` |
+
 Only a reported `state == "dead"` marks a source fatally dead; transient poll
-failures (e.g. the OpenStream server briefly unreachable) never evict streams. On
-session stop the ids are released (`POST /api/actions {"op":"remove"}`).
+failures (e.g. the OpenStream server briefly unreachable) never evict streams. The
+ffmpeg-only slow-speed quarantine does **not** apply — keep-up margin is not
+playback speed, so a live-but-lagging source stays and is ranked down by its score.
+On session stop the ids are released (`POST /api/actions {"op":"remove"}`).
+
+> **Requires the full OpenStream *server*** (`cmd/server`, e.g. `compose.server.yml`),
+> which serves the `/api/*` control plane. The gateway-only `openstream serve`
+> (`compose.openstream.yml`) exposes just `/ace/getstream`, so the health poll 404s
+> and every source shows a permanent keep-up of 0.
 
 **Choosing it:** in *Create Monitoring Session*, set **Monitoring Backend →
 OpenStream swarm health** (the CV detection toggles hide, since they don't apply).

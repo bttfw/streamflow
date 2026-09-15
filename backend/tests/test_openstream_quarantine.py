@@ -69,8 +69,12 @@ class TestOpenStreamQuarantine(unittest.TestCase):
         self.service.session_manager = MagicMock()
         self.service.screenshot_service = MagicMock()
         self.service.monitors = {}
-        # Isolate the quarantine logic from ranking/Dispatcharr side effects.
-        self.service._update_monitoring_ranks = MagicMock()
+        # StreamMonitoringService is a process-wide singleton, so isolate the
+        # ranking/Dispatcharr side effects with a patch that self-restores rather
+        # than a bare attribute assignment that would leak into later tests.
+        ranks_patcher = patch.object(self.service, '_update_monitoring_ranks')
+        ranks_patcher.start()
+        self.addCleanup(ranks_patcher.stop)
 
     def tearDown(self):
         self.config_dir_patcher.stop()

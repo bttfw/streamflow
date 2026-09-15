@@ -776,7 +776,18 @@ class StreamMonitoringService:
                 stream_info.fps = stats_fps
             if stats_bitrate > 0:
                 stream_info.bitrate = int(stats_bitrate)
-            
+
+            # OpenStream swarm telemetry (None on ffmpeg stats, so ffmpeg sessions
+            # are unaffected).
+            if getattr(stats, 'swarm_state', None) is not None:
+                stream_info.swarm_state = stats.swarm_state
+                stream_info.peers = getattr(stats, 'peers', None)
+                stream_info.seeders = getattr(stats, 'seeders', None)
+                stream_info.download_kbps = getattr(stats, 'download_kbps', None)
+                stream_info.swarm_reliability = getattr(stats, 'reliability_score', None)
+                stream_info.keepup_margin = getattr(stats, 'keepup_margin', None)
+                stream_info.latency_secs = getattr(stats, 'latency_secs', None)
+
             # Update transport health
             health_report = monitor.get_transport_health()
             if not isinstance(health_report, dict):

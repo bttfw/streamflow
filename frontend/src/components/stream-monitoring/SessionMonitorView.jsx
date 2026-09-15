@@ -843,6 +843,14 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
     return `${bitrate} kbps`;
   };
 
+  const formatDownload = (kbps) => {
+    if (kbps == null || kbps <= 0) return 'N/A';
+    if (kbps >= 1000) {
+      return `${(kbps / 1000).toFixed(1)} Mbps`;
+    }
+    return `${kbps.toFixed(0)} kbps`;
+  };
+
   const formatTimeRemaining = (seconds) => {
     if (seconds === undefined || seconds === null) return '-';
     if (seconds <= 0) return 'Stable soon';
@@ -861,7 +869,16 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
             {!isOpenStream && <TableHead>Quality</TableHead>}
             {!isOpenStream && <TableHead>FPS</TableHead>}
             <TableHead>{isOpenStream ? 'Keep-up' : 'Speed'}</TableHead>
-            <TableHead>Bitrate</TableHead>
+            {isOpenStream ? (
+              <>
+                <TableHead>Download</TableHead>
+                <TableHead>Peers/Seeders</TableHead>
+                <TableHead>Latency</TableHead>
+                <TableHead>Swarm Score</TableHead>
+              </>
+            ) : (
+              <TableHead>Bitrate</TableHead>
+            )}
             {!isOpenStream && <TableHead>Logo Verify</TableHead>}
             <TableHead>{isOpenStream ? 'Swarm Health' : 'Transport Health'}</TableHead>
             {!showQuarantined ? (
@@ -939,11 +956,34 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
                   <TableCell>{stream.fps ? `${stream.fps.toFixed(0)} fps` : 'N/A'}</TableCell>
                 )}
                 <TableCell>
-                  <span className={`font-mono ${(stream.speed || stream.current_speed || 0) < 0.9 ? 'text-orange-500' : 'text-green-500'}`}>
-                    {(stream.speed || stream.current_speed || 0).toFixed(2)}{isOpenStream ? '' : 'x'}
-                  </span>
+                  {(() => {
+                    const margin = isOpenStream
+                      ? (stream.keepup_margin ?? stream.current_speed ?? 0)
+                      : (stream.speed ?? stream.current_speed ?? 0);
+                    return (
+                      <span className={`font-mono ${margin < 0.9 ? 'text-orange-500' : 'text-green-500'}`}>
+                        {margin.toFixed(2)}{isOpenStream ? '' : 'x'}
+                      </span>
+                    );
+                  })()}
                 </TableCell>
-                <TableCell>{formatBitrate(stream.bitrate)}</TableCell>
+                {isOpenStream ? (
+                  <>
+                    <TableCell className="font-mono">{formatDownload(stream.download_kbps)}</TableCell>
+                    <TableCell className="font-mono">
+                      <span className="text-green-500">{stream.seeders ?? 0}</span>
+                      <span className="text-muted-foreground"> / {stream.peers ?? 0}</span>
+                    </TableCell>
+                    <TableCell className="font-mono">
+                      {stream.latency_secs != null ? `${stream.latency_secs}s` : 'N/A'}
+                    </TableCell>
+                    <TableCell className="font-mono">
+                      {stream.swarm_reliability != null ? `${(stream.swarm_reliability * 100).toFixed(0)}%` : 'N/A'}
+                    </TableCell>
+                  </>
+                ) : (
+                  <TableCell>{formatBitrate(stream.bitrate)}</TableCell>
+                )}
                 {!isOpenStream && (
                 <TableCell>
                   <div className="flex flex-col gap-1">

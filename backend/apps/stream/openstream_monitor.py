@@ -13,11 +13,21 @@ Dispatcharr stream URLs point at an OpenStream/AceStream gateway). Both the API
 base URL and the 40-hex content id are derived from the stream URL, so no separate
 server configuration is needed.
 
-Mapping OpenStream health -> ffmpeg-style stats:
-  * ``speed``       <- ``keepUpMargin``  (cursor advance / live-edge advance; ~1.0 = keeping up)
-  * ``is_alive``    <- ``state != "dead"``
-  * ``is_buffering``<- ``state in {warming, draining, stalled}``
-  * ``bitrate``     <- ``trueBitrateKbps``
+Mapping OpenStream snapshot -> ffmpeg-style stats:
+  * ``speed``       <- ``health.keepUpMargin``  (cursor advance / live-edge advance; ~1.0 = keeping up)
+  * ``is_alive``    <- ``health.state != "dead"``
+  * ``is_buffering``<- ``health.state in {warming, draining, stalled}``
+  * ``bitrate``     <- ``health.trueBitrateKbps``
+
+The snapshot also carries swarm telemetry that has no ffmpeg equivalent, surfaced
+verbatim for the UI (these are the *reliable* signals on a warm live pull, where
+raw keep-up margin is noisy — see the OpenStream MONITORING docs):
+  * ``download_kbps``    <- top-level ``kbps``     (smoothed swarm download rate)
+  * ``peers`` / ``seeders`` <- top-level ``peers`` / ``seeders``
+  * ``reliability_score``<- ``health.reliabilityScore`` (0..1 EWMA, the primary rank key)
+  * ``latency_secs``     <- ``health.latencySecs``
+  * ``swarm_state``      <- ``health.state``
+
 Only a reported ``state == "dead"`` marks the stream fatally dead; transient poll
 failures never do (a down OpenStream server must not evict every source).
 """
@@ -151,7 +161,10 @@ class OpenStreamStreamMonitor:
             status = "dead"
         elif self._buffering:
             status = "degraded"
-        return {"status": status, "summary": f"openstream:{self._state}", "error_density": self._error_density}
+        peers = self.stats.peers if self.stats.peers is not None else 0
+        seeders = self.stats.seeders if self.stats.seeders is not None else 0
+        summary = f"openstream:{self._state} · {seeders}/{peers} seeders/peers"
+        return {"status": status, "summary": summary, "error_density": self._error_density}
 
     # ---- OpenStream API ----
 
@@ -213,18 +226,33 @@ class OpenStreamStreamMonitor:
             return
         self._apply_snapshot(snap if isinstance(snap, dict) else {})
 
-    def _apply_warming(self):
+    def _apply_swarm_telemetry(self, snap: dict, health: dict):
+        """Copy the swarm signals (peers/seeders/download/score/latency) that have
+        no ffmpeg equivalent onto stats, so the API and UI can show them."""
+        self.stats.peers = _as_int(snap.get("peers"))
+        self.stats.seeders = _as_int(snap.get("seeders"))
+        self.stats.download_kbps = _as_float(snap.get("kbps"))
+        self.stats.swarm_state = self._state
+        if health:
+            self.stats.reliability_score = _as_float(health.get("reliabilityScore"))
+            self.stats.keepup_margin = _as_float(health.get("keepUpMargin"))
+            self.stats.latency_secs = _as_int(health.get("latencySecs"))
+
+    def _apply_warming(self, snap: Optional[dict] = None):
         self._state = "warming"
         self._buffering = True
         self.stats.is_alive = True
         self.stats.speed = 0.0
         self.stats.last_updated = time.time()
+        self._apply_swarm_telemetry(snap or {}, {})
 
     def _apply_snapshot(self, snap: dict):
+        logger.debug("OpenStream snapshot for %s: %s", self.content_id, snap)
         health = snap.get("health") if isinstance(snap.get("health"), dict) else None
         if not health:
-            # Session exists but no health yet (just started) -> warming.
-            self._apply_warming()
+            # Session exists but no health yet (just started) -> warming. Peers and
+            # download rate are already meaningful, so keep them.
+            self._apply_warming(snap)
             return
         state = str(health.get("state") or "warming")
         margin = _as_float(health.get("keepUpMargin"))
@@ -233,6 +261,7 @@ class OpenStreamStreamMonitor:
         self._error_density = max(0.0, min(1.0, 1.0 - margin))
         self.stats.last_updated = time.time()
         self.stats.bitrate = true_bitrate
+        self._apply_swarm_telemetry(snap, health)
 
         if state == "dead":
             self.stats.is_alive = False
@@ -256,3 +285,10 @@ def _as_float(v) -> float:
         return float(v)
     except (TypeError, ValueError):
         return 0.0
+
+
+def _as_int(v) -> int:
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return 0

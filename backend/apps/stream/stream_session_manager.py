@@ -105,6 +105,14 @@ class StreamInfo:
     transport_health: str = 'Healthy'           # Healthy | Degraded | Severe | Critical
     transport_health_summary: str = ''
     transport_error_density: float = 0.0        # peak errors/minute in last 60s
+    # OpenStream swarm telemetry (None for ffmpeg sessions)
+    swarm_state: Optional[str] = None           # dead|warming|healthy|draining|stalled
+    peers: Optional[int] = None                 # connected peers
+    seeders: Optional[int] = None               # peers actively feeding us
+    download_kbps: Optional[float] = None       # smoothed swarm download rate
+    swarm_reliability: Optional[float] = None   # server 0..1 EWMA rank key
+    keepup_margin: Optional[float] = None        # cursorRate/edgeRate (~1.0 = keeping up)
+    latency_secs: Optional[int] = None          # playback distance behind the live edge
     
     @property
     def is_quarantined(self) -> bool:

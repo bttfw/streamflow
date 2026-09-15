@@ -65,3 +65,36 @@ def test_missing_health_is_warming():
     assert m.stats.is_alive is True          # not dead — just starting
     assert m.is_buffering() is True          # warming counts as not-yet-healthy
     assert m.stats.speed == 0.0
+
+
+def test_snapshot_captures_swarm_telemetry():
+    m = _monitor()
+    m._apply_snapshot({
+        "peers": 12,
+        "seeders": 4,
+        "kbps": 5300.5,
+        "health": {
+            "state": "healthy",
+            "keepUpMargin": 1.0,
+            "reliabilityScore": 0.87,
+            "latencySecs": 3,
+            "trueBitrateKbps": 4200,
+        },
+    })
+    assert m.stats.peers == 12
+    assert m.stats.seeders == 4
+    assert m.stats.download_kbps == 5300.5
+    assert m.stats.reliability_score == 0.87
+    assert m.stats.keepup_margin == 1.0
+    assert m.stats.latency_secs == 3
+    assert m.stats.swarm_state == "healthy"
+
+
+def test_warming_still_reports_peers_and_download():
+    """Peers/download are meaningful before health exists — keep them while warming."""
+    m = _monitor()
+    m._apply_snapshot({"peers": 8, "seeders": 2, "kbps": 1500})  # no health yet
+    assert m.stats.speed == 0.0            # keep-up not measurable yet
+    assert m.stats.peers == 8
+    assert m.stats.seeders == 2
+    assert m.stats.download_kbps == 1500
