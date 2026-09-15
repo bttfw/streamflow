@@ -702,6 +702,10 @@ class StreamMonitoringService:
             return
         
         current_time = time.time()
+        # OpenStream sessions source health from a swarm-health API, not a local
+        # ffmpeg decode: the ffmpeg-only checks below (slow-speed quarantine, logo
+        # CV, sidecar loop detection) don't apply and must not evict live sources.
+        is_openstream = getattr(session, 'session_type', 'ffmpeg') == 'openstream'
         with self._state_lock:
             session_monitors = dict(self.monitors.get(session_id, {}))
         
@@ -905,6 +909,11 @@ class StreamMonitoringService:
                             del self.monitors[session_id][stream_id]
                     # Note: We don't quarantine yet, let it try to restart once. 
                     # If it keeps timing out, reliability score will plummet and it might be quarantined via score logic.
+                elif is_openstream:
+                    # keep-up margin is not ffmpeg playback speed; a live-but-lagging
+                    # source stays alive and is ranked down by its reliability score.
+                    # Only a reported state == "dead" (handled above) evicts it.
+                    stream_info.low_speed_start_time = None
                 else:
                     current_speed = stats.speed if stats.speed is not None else 0.0
                     if current_speed < SLOW_SPEED_THRESHOLD:
@@ -922,7 +931,7 @@ class StreamMonitoringService:
                                 self._remove_stream_from_dispatcharr(session_id, stream_id, "slow-speed")
                     else:
                         stream_info.low_speed_start_time = None
-                    
+
                     # Sidecar loop detection logic
                     with self._state_lock:
                         sidecar = self.sidecars.get(session_id, {}).get(stream_id)
@@ -1158,7 +1167,12 @@ class StreamMonitoringService:
         session = self.session_manager.get_session(session_id)
         if not session:
             return
-        
+        # OpenStream sessions have no decoded frames: screenshots (and the logo CV
+        # they feed) would spawn ffmpeg against the gateway URL, defeating the point
+        # of the backend and producing spurious logo-mismatch quarantines.
+        if getattr(session, 'session_type', 'ffmpeg') == 'openstream':
+            return
+
         current_time = time.time()
         interval = session.screenshot_interval_seconds
         

@@ -401,6 +401,7 @@ def get_stream_session_response(
             "probe_interval_ms": session.probe_interval_ms,
             "screenshot_interval_seconds": session.screenshot_interval_seconds,
             "window_size": session.window_size,
+            "session_type": getattr(session, "session_type", "ffmpeg"),
             "streams": streams_data,
             "ad_periods": session.ad_periods,
             "epg_event_id": session.epg_event_id,

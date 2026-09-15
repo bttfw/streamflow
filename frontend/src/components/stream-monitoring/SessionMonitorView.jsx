@@ -652,6 +652,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
               ) : (
                 <StreamsTable
                   streams={stableStreams}
+                  isOpenStream={session?.session_type === 'openstream'}
                   sessionId={sessionId}
                   onQuarantine={handleQuarantineStream}
                   playingStreamIds={playingStreamIds}
@@ -683,6 +684,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
               ) : (
                 <StreamsTable
                   streams={reviewStreams}
+                  isOpenStream={session?.session_type === 'openstream'}
                   sessionId={sessionId}
                   onQuarantine={handleQuarantineStream}
                   playingStreamIds={playingStreamIds}
@@ -714,6 +716,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
               ) : (
                 <StreamsTable
                   streams={quarantinedStreams}
+                  isOpenStream={session?.session_type === 'openstream'}
                   sessionId={sessionId}
                   showQuarantined
                   onRevive={handleReviveStream}
@@ -826,7 +829,7 @@ const TransportHealthBadge = ({ status, summary, errorDensity }) => {
 };
 
 // Streams Table Component
-function StreamsTable({ streams, sessionId, onQuarantine, onRevive, playingStreamIds = new Set(), showQuarantined = false, isReview = false, cursorTime, isLive, zoomLevel, adPeriods = [] }) {
+function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, onRevive, playingStreamIds = new Set(), showQuarantined = false, isReview = false, cursorTime, isLive, zoomLevel, adPeriods = [] }) {
   const formatQuality = (stream) => {
     if (!stream.width || !stream.height) return 'Unknown';
     return `${stream.width}x${stream.height}`;
@@ -855,12 +858,12 @@ function StreamsTable({ streams, sessionId, onQuarantine, onRevive, playingStrea
           <TableRow>
             <TableHead className="w-12">#</TableHead>
             <TableHead>Name</TableHead>
-            <TableHead>Quality</TableHead>
-            <TableHead>FPS</TableHead>
-            <TableHead>Speed</TableHead>
+            {!isOpenStream && <TableHead>Quality</TableHead>}
+            {!isOpenStream && <TableHead>FPS</TableHead>}
+            <TableHead>{isOpenStream ? 'Keep-up' : 'Speed'}</TableHead>
             <TableHead>Bitrate</TableHead>
-            <TableHead>Logo Verify</TableHead>
-            <TableHead>Transport Health</TableHead>
+            {!isOpenStream && <TableHead>Logo Verify</TableHead>}
+            <TableHead>{isOpenStream ? 'Swarm Health' : 'Transport Health'}</TableHead>
             {!showQuarantined ? (
               <>
                 <TableHead>Reliability</TableHead>
@@ -920,23 +923,28 @@ function StreamsTable({ streams, sessionId, onQuarantine, onRevive, playingStrea
                     </div>
                   )}
                 </TableCell>
-                <TableCell>
-                  <div className="flex items-center gap-2">
-                    <span>{formatQuality(stream)}</span>
-                    {stream.hdr_format && (
-                      <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-xs px-2 py-0 h-5">
-                        {stream.hdr_format}
-                      </Badge>
-                    )}
-                  </div>
-                </TableCell>
-                <TableCell>{stream.fps ? `${stream.fps.toFixed(0)} fps` : 'N/A'}</TableCell>
+                {!isOpenStream && (
+                  <TableCell>
+                    <div className="flex items-center gap-2">
+                      <span>{formatQuality(stream)}</span>
+                      {stream.hdr_format && (
+                        <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-xs px-2 py-0 h-5">
+                          {stream.hdr_format}
+                        </Badge>
+                      )}
+                    </div>
+                  </TableCell>
+                )}
+                {!isOpenStream && (
+                  <TableCell>{stream.fps ? `${stream.fps.toFixed(0)} fps` : 'N/A'}</TableCell>
+                )}
                 <TableCell>
                   <span className={`font-mono ${(stream.speed || stream.current_speed || 0) < 0.9 ? 'text-orange-500' : 'text-green-500'}`}>
-                    {(stream.speed || stream.current_speed || 0).toFixed(2)}x
+                    {(stream.speed || stream.current_speed || 0).toFixed(2)}{isOpenStream ? '' : 'x'}
                   </span>
                 </TableCell>
                 <TableCell>{formatBitrate(stream.bitrate)}</TableCell>
+                {!isOpenStream && (
                 <TableCell>
                   <div className="flex flex-col gap-1">
                     <Badge
@@ -955,8 +963,9 @@ function StreamsTable({ streams, sessionId, onQuarantine, onRevive, playingStrea
                     )}
                   </div>
                 </TableCell>
+                )}
                 <TableCell>
-                  <TransportHealthBadge 
+                  <TransportHealthBadge
                     status={stream.transport_health} 
                     summary={stream.transport_health_summary}
                     errorDensity={stream.transport_error_density}
