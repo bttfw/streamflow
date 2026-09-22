@@ -1224,6 +1224,21 @@ export default function StreamChecker() {
                       </p>
                     </div>
 
+                    <div className="flex items-center justify-between rounded-md border border-border px-3 py-2">
+                      <div className="space-y-0.5">
+                        <Label htmlFor="bitrate_recheck_enabled">Bitrate Recheck</Label>
+                        <p className="text-xs text-muted-foreground">
+                          Recheck missing bitrate serially after initial probes
+                        </p>
+                      </div>
+                      <Switch
+                        id="bitrate_recheck_enabled"
+                        checked={editedConfig?.stream_analysis?.bitrate_recheck_enabled !== false}
+                        onCheckedChange={(checked) => updateConfigValue('stream_analysis.bitrate_recheck_enabled', checked)}
+                        disabled={!configEditing}
+                      />
+                    </div>
+
                     <div className="space-y-2">
                       <Label htmlFor="max_loop_duration">Loop Probe Duration (seconds)</Label>
                       <Input
