@@ -155,6 +155,7 @@ class TestSessionSync(unittest.TestCase):
         
         service.session_manager = Mock()
         service.session_manager.get_session.return_value = session
+        service.session_manager.get_session_owner.return_value = session.session_id
         
         # Mock UDI: Channel has session stream (1) AND alien stream (9999)
         mock_udi = Mock()

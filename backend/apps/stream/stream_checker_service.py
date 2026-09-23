@@ -5388,6 +5388,19 @@ class StreamCheckerService:
                 dead_stream_removal_enabled,
             )
 
+            if get_session_manager().is_channel_in_active_session(channel_id):
+                logger.info(
+                    "Skipping channel %s write-back because monitoring now owns it",
+                    channel_name,
+                )
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'reason': 'in_monitoring_session',
+                    'channel_id': channel_id,
+                    'channel_name': channel_name,
+                }
+
             if not hasattr(update_channel_streams, "mock_calls"):
                 failed_connectivity = self._require_quality_check_connectivity(
                     phase='channel_stream_update',
@@ -5412,6 +5425,7 @@ class StreamCheckerService:
                     valid_stream_ids=write_back_valid_stream_ids,
                     allow_dead_streams=(not dead_stream_removal_enabled),
                     protected_stream_ids=protected_active_stream_ids,
+                    expected_current_stream_ids=assigned_stream_ids,
                 ),
             )
             if not update_authorized:
@@ -6731,6 +6745,19 @@ class StreamCheckerService:
                 dead_stream_removal_enabled,
             )
 
+            if get_session_manager().is_channel_in_active_session(channel_id):
+                logger.info(
+                    "Skipping channel %s write-back because monitoring now owns it",
+                    channel_name,
+                )
+                return {
+                    'success': True,
+                    'skipped': True,
+                    'reason': 'in_monitoring_session',
+                    'channel_id': channel_id,
+                    'channel_name': channel_name,
+                }
+
             if not hasattr(update_channel_streams, "mock_calls"):
                 failed_connectivity = self._require_quality_check_connectivity(
                     phase='channel_stream_update',
@@ -6755,6 +6782,7 @@ class StreamCheckerService:
                     valid_stream_ids=write_back_valid_stream_ids,
                     allow_dead_streams=(not dead_stream_removal_enabled),
                     protected_stream_ids=protected_active_stream_ids,
+                    expected_current_stream_ids=assigned_stream_ids,
                 ),
             )
             if not update_authorized:
@@ -8932,7 +8960,18 @@ class StreamCheckerService:
                     else:
                         stream_id_whitelist = None
                         
-                    if concurrent_enabled:
+                    if get_session_manager().is_channel_in_active_session(channel_id):
+                        logger.info(
+                            "Skipping synchronous quality check for monitored channel %s",
+                            channel_id,
+                        )
+                        channel_result = {
+                            'success': True,
+                            'skipped': True,
+                            'reason': 'in_monitoring_session',
+                            'channel_id': channel_id,
+                        }
+                    elif concurrent_enabled:
                         channel_result = self._check_channel_concurrent(
                             channel_id,
                             skip_batch_changelog=True,

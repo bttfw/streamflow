@@ -47,7 +47,9 @@ def sync_harness():
 
         with patch('api_utils.update_channel_streams') as update, \
              patch.object(service.io_pool, 'submit', side_effect=lambda fn, *args: fn(*args)):
-            def write(_channel_id, stream_ids):
+            def write(_channel_id, stream_ids, *, expected_current_stream_ids=None):
+                if expected_current_stream_ids != remote['streams']:
+                    return False
                 remote['streams'] = list(stream_ids)
                 cache['streams'] = list(stream_ids)
                 return True
@@ -85,7 +87,7 @@ def test_external_drift_is_corrected_on_bounded_refresh(sync_harness):
     # the next configured tick applies the freshly observed remote state.
     with patch('stream_monitoring_service.time.time', return_value=100.0 + EXTERNAL_SYNC_VERIFY_INTERVAL + 1.1):
         service._check_sync_enforcement(session)
-    update.assert_called_once_with(9, [101])
+    update.assert_called_once_with(9, [101], expected_current_stream_ids=[101, 999])
     assert remote['streams'] == [101]
     assert udi.refresh_channel_by_id.call_count == 3  # initial GET, drift GET, post-write GET
 
@@ -120,12 +122,12 @@ def test_quarantined_source_is_removed_then_review_can_restore_it(sync_harness, 
     session.session_type = session_type
     stream.status = 'quarantined'
     service._update_monitoring_ranks(session.session_id, time.time())
-    update.assert_called_once_with(9, [])
+    update.assert_called_once_with(9, [], expected_current_stream_ids=[101])
     assert remote['streams'] == []
 
     update.reset_mock()
     stream.status = 'review'  # automatic cooldown and manual revive both enter review
     cache['streams'] = []
     service._update_monitoring_ranks(session.session_id, time.time())
-    update.assert_called_once_with(9, [101])
+    update.assert_called_once_with(9, [101], expected_current_stream_ids=[])
     assert remote['streams'] == [101]

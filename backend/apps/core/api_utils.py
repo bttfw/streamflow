@@ -45,6 +45,8 @@ from apps.core.auth import (
 logger = setup_logging(__name__)
 
 _stream_stats_update_lock = threading.RLock()
+_channel_assignment_locks_guard = threading.Lock()
+_channel_assignment_locks: Dict[int, Any] = {}
 _BITRATE_INCOMPLETE_REASONS = {
     'missing_bitrate',
     'missing_bitrate_after_recheck',
@@ -272,6 +274,55 @@ def _dedupe_stream_ids(stream_ids: List[int]) -> List[int]:
     return deduped
 
 
+def get_channel_assignment_lock(channel_id: int) -> threading.RLock:
+    """Serialize StreamFlow assignment writers for one Dispatcharr channel."""
+    channel_id = int(channel_id)
+    with _channel_assignment_locks_guard:
+        lock = _channel_assignment_locks.get(channel_id)
+        if lock is None:
+            lock = threading.RLock()
+            _channel_assignment_locks[channel_id] = lock
+        return lock
+
+
+def _fetch_authoritative_channel_stream_ids(channel_id: int) -> Optional[List[int]]:
+    """Read the full ordered assignment directly from Dispatcharr, including UDI misses."""
+    url = f"{_get_base_url()}/api/channels/channels/{channel_id}/"
+    channel = fetch_data_from_url(url)
+    if not isinstance(channel, dict) or not isinstance(channel.get('streams'), list):
+        logger.error("Could not read authoritative assignment for channel %s", channel_id)
+        return None
+    try:
+        stream_ids = [int(stream_id) for stream_id in channel['streams']]
+    except (TypeError, ValueError):
+        logger.error("Invalid authoritative assignment for channel %s", channel_id)
+        return None
+    try:
+        cached_channel = dict(channel)
+        cached_channel['streams'] = stream_ids
+        get_udi_manager().update_channel(channel_id, cached_channel)
+    except Exception as exc:
+        logger.warning("Could not refresh channel %s in UDI after read: %s", channel_id, exc)
+    return stream_ids
+
+
+def _verify_channel_assignment_after_patch(channel_id: int, expected_ids: List[int]) -> bool:
+    """Confirm that Dispatcharr applied the exact ordered list before reporting success."""
+    actual_ids = None
+    for attempt in range(2):
+        if attempt:
+            time.sleep(0.2)
+        actual_ids = _fetch_authoritative_channel_stream_ids(channel_id)
+        if actual_ids == expected_ids:
+            return True
+    logger.error(
+        "Channel %s assignment readback differs after PATCH: expected %s, found %s",
+        channel_id, expected_ids[:10],
+        actual_ids[:10] if actual_ids is not None else None,
+    )
+    return False
+
+
 def _verify_missing_stream_ids(
     requested_ids: List[int], cached_valid_ids: set, channel_id: int
 ) -> Optional[set]:
@@ -309,6 +360,24 @@ def update_channel_streams(
     channel_id: int, stream_ids: List[int], valid_stream_ids: Optional[set] = None,
     allow_dead_streams: bool = False,
     protected_stream_ids: Optional[set] = None,
+    expected_current_stream_ids: Optional[List[int]] = None,
+) -> bool:
+    with get_channel_assignment_lock(channel_id):
+        return _update_channel_streams_locked(
+            channel_id,
+            stream_ids,
+            valid_stream_ids=valid_stream_ids,
+            allow_dead_streams=allow_dead_streams,
+            protected_stream_ids=protected_stream_ids,
+            expected_current_stream_ids=expected_current_stream_ids,
+        )
+
+
+def _update_channel_streams_locked(
+    channel_id: int, stream_ids: List[int], valid_stream_ids: Optional[set] = None,
+    allow_dead_streams: bool = False,
+    protected_stream_ids: Optional[set] = None,
+    expected_current_stream_ids: Optional[List[int]] = None,
 ) -> bool:
     """
     Update the streams for a given channel ID.
@@ -326,6 +395,9 @@ def update_channel_streams(
             global checks to give dead streams a second chance). Default False.
         protected_stream_ids (Optional[set]): Stream IDs that must survive the
             dead-stream filter because an active viewer is currently using them.
+        expected_current_stream_ids (Optional[List[int]]): When supplied, refuse
+            to overwrite a channel whose authoritative assignment changed after
+            the caller calculated its desired full list.
         
     Returns:
         bool: True if update successful, False otherwise.
@@ -379,6 +451,24 @@ def update_channel_streams(
     
     url = f"{_get_base_url()}/api/channels/channels/{channel_id}/"
     data = {"streams": filtered_stream_ids}
+
+    if expected_current_stream_ids is not None:
+        current_stream_ids = _fetch_authoritative_channel_stream_ids(channel_id)
+        if current_stream_ids is None:
+            return False
+        try:
+            expected_ids = [int(stream_id) for stream_id in expected_current_stream_ids]
+        except (TypeError, ValueError):
+            logger.error("Invalid expected assignment for channel %s", channel_id)
+            return False
+        if current_stream_ids != expected_ids:
+            logger.warning(
+                "Channel %s assignment changed before write: expected %s, found %s; refusing stale PATCH",
+                channel_id, expected_ids[:10], current_stream_ids[:10],
+            )
+            return False
+        if current_stream_ids == filtered_stream_ids:
+            return True
     
     try:
         response = patch_request(url, data)
@@ -388,19 +478,7 @@ def update_channel_streams(
                 f"{len(filtered_stream_ids)} streams"
             )
 
-            # Update UDI cache directly — we know exactly which streams were
-            # assigned, so no extra HTTP call is needed.
-            try:
-                udi = get_udi_manager()
-                channel = udi.get_channel_by_id(channel_id)
-                if channel:
-                    updated = channel.copy()
-                    updated['streams'] = filtered_stream_ids
-                    udi.update_channel(channel_id, updated)
-            except Exception as e:
-                logger.warning(f"Failed to update UDI cache for channel {channel_id}: {e}")
-
-            return True
+            return _verify_channel_assignment_after_patch(channel_id, filtered_stream_ids)
         else:
             status = response.status_code if response else 'None'
             logger.warning(
@@ -435,6 +513,14 @@ def update_channel_streams(
                 
                 # Retry with validated IDs
                 if revalidated_stream_ids:
+                    if expected_current_stream_ids is not None:
+                        current_stream_ids = _fetch_authoritative_channel_stream_ids(channel_id)
+                        if current_stream_ids != expected_ids:
+                            logger.warning(
+                                "Channel %s changed before assignment retry; refusing stale PATCH",
+                                channel_id,
+                            )
+                            return False
                     retry_data = {"streams": revalidated_stream_ids}
                     retry_response = patch_request(url, retry_data)
                     if retry_response and retry_response.status_code in [200, 204]:
@@ -442,15 +528,9 @@ def update_channel_streams(
                             f"✓ Successfully updated channel {channel_id} with "
                             f"{len(revalidated_stream_ids)} validated streams (after retry)"
                         )
-                        try:
-                            channel = udi.get_channel_by_id(channel_id)
-                            if channel:
-                                updated = channel.copy()
-                                updated['streams'] = revalidated_stream_ids
-                                udi.update_channel(channel_id, updated)
-                        except Exception as cache_err:
-                            logger.warning(f"Failed to update UDI cache for channel {channel_id} after retry: {cache_err}")
-                        return True
+                        return _verify_channel_assignment_after_patch(
+                            channel_id, revalidated_stream_ids
+                        )
                 else:
                     logger.warning(
                         f"No valid streams remaining for channel {channel_id} after UDI refresh"
@@ -636,8 +716,7 @@ def filter_dead_streams(stream_ids: List[int], stream_id_to_url: Optional[Dict[i
         from apps.stream.dead_streams_tracker import DeadStreamsTracker
         tracker = DeadStreamsTracker()
     except Exception as e:
-        logger.warning(f"Could not load dead streams tracker in filter_dead_streams: {e}")
-        return stream_ids, 0
+        raise RuntimeError("Dead stream tracker unavailable; refusing channel write") from e
 
     # The previous per-stream calls performed one SQL query for each URL; the
     # offline branch even reloaded the entire dead-stream table each time.
@@ -648,8 +727,9 @@ def filter_dead_streams(stream_ids: List[int], stream_id_to_url: Optional[Dict[i
             {stream_id_to_url.get(sid) for sid in stream_ids if stream_id_to_url.get(sid)}
         )
     except Exception as e:
-        logger.warning(f"Could not snapshot dead streams for channel write: {e}")
-        dead_reasons = None
+        raise RuntimeError("Dead stream snapshot unavailable; refusing channel write") from e
+    if not isinstance(dead_reasons, dict):
+        raise RuntimeError("Invalid dead stream snapshot; refusing channel write")
     
     filtered_stream_ids = []
     count_filtered = 0
@@ -661,13 +741,7 @@ def filter_dead_streams(stream_ids: List[int], stream_id_to_url: Optional[Dict[i
             filtered_stream_ids.append(sid)
             continue
             
-        if dead_reasons is not None:
-            is_dead = dead_reasons.get(url) == 'offline' if only_offline else url in dead_reasons
-        elif only_offline:
-            # Preserve the former behavior if the snapshot query failed.
-            is_dead = tracker.is_offline(url)
-        else:
-            is_dead = tracker.is_dead(url)
+        is_dead = dead_reasons.get(url) == 'offline' if only_offline else url in dead_reasons
             
         if is_dead:
             count_filtered += 1
@@ -720,6 +794,16 @@ def add_streams_to_channel(
     channel_id: int, stream_ids: List[int], valid_stream_ids: Optional[set] = None,
     allow_dead_streams: bool = False
 ) -> int:
+    with get_channel_assignment_lock(channel_id):
+        return _add_streams_to_channel_locked(
+            channel_id, stream_ids, valid_stream_ids, allow_dead_streams
+        )
+
+
+def _add_streams_to_channel_locked(
+    channel_id: int, stream_ids: List[int], valid_stream_ids: Optional[set] = None,
+    allow_dead_streams: bool = False
+) -> int:
     """
     Add new streams to an existing channel.
     
@@ -742,32 +826,15 @@ def add_streams_to_channel(
     Raises:
         ValueError: If current streams cannot be fetched.
     """
-    # First get current streams
-    current_streams = fetch_channel_streams(channel_id)
-    if current_streams is None:
+    # A UDI snapshot can lag behind a manual edit or another StreamFlow writer.
+    # Read the complete assignment inside the channel lock before appending.
+    current_stream_ids = _fetch_authoritative_channel_stream_ids(channel_id)
+    if current_stream_ids is None:
         raise ValueError(
-            f"Could not fetch current streams for channel "
+            f"Could not fetch current assignment for channel "
             f"{channel_id}"
         )
-    
-    current_stream_ids = _dedupe_stream_ids([s['id'] for s in current_streams])
-
-    # Preserve any stream IDs that are assigned to the channel in Dispatcharr but were
-    # not returned by fetch_channel_streams() due to a stale UDI stream cache.
-    # Without this, those streams would be silently dropped when updated_streams is
-    # written back to the channel.
-    _raw_channel = get_udi_manager().get_channel_by_id(channel_id)
-    if _raw_channel:
-        _raw_ids = _raw_channel.get('streams', [])
-        _current_id_set = set(current_stream_ids)
-        _uncached = [sid for sid in _raw_ids if sid not in _current_id_set]
-        if _uncached:
-            logger.warning(
-                f"add_streams_to_channel: channel {channel_id} has {len(_uncached)} "
-                f"stream ID(s) not in UDI stream cache — preserving to avoid accidental "
-                f"removal: {_uncached[:5]}{'...' if len(_uncached) > 5 else ''}"
-            )
-            current_stream_ids = _dedupe_stream_ids(current_stream_ids + _uncached)
+    current_stream_ids = _dedupe_stream_ids(current_stream_ids)
     
     # Filter out stream IDs that no longer exist in Dispatcharr
     if valid_stream_ids is None:
@@ -806,7 +873,10 @@ def add_streams_to_channel(
     
     if valid_new_stream_ids:
         updated_streams = _dedupe_stream_ids(current_stream_ids + valid_new_stream_ids)
-        if not update_channel_streams(channel_id, updated_streams, valid_stream_ids, allow_dead_streams):
+        if not update_channel_streams(
+            channel_id, updated_streams, valid_stream_ids, allow_dead_streams,
+            expected_current_stream_ids=current_stream_ids,
+        ):
             raise RuntimeError(f"Dispatcharr rejected stream assignment for channel {channel_id}")
         logger.info(
             f"Added {len(valid_new_stream_ids)} new streams to channel "

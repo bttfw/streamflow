@@ -450,6 +450,25 @@ class AutomationRunStatusTests(unittest.TestCase):
         self.assertEqual(summary["checked_count"], 2)
         self.assertEqual(summary["incomplete_count"], 1)
 
+    def test_failed_quality_write_cannot_complete_automation_cycle(self):
+        summary = AutomatedStreamManager._summarize_quality_check_results(
+            {42: {"success": False, "error": "Dispatcharr assignment changed before write"}},
+            expected_count=1,
+        )
+
+        self.assertFalse(summary["ok"])
+        self.assertEqual(summary["failed_count"], 1)
+        self.assertEqual(summary["abort_message"], "Dispatcharr assignment changed before write")
+
+        manager = self._manager()
+        manager._start_run_status(forced=True, forced_period_id="period-1")
+        outcome = manager._finish_cycle_outcome(
+            refresh_success=True,
+            cycle_abort_message=summary["abort_message"],
+        )
+        self.assertEqual(outcome, "aborted")
+        self.assertEqual(manager.get_run_status()["state"], "aborted")
+
     def test_quality_summary_identifies_only_complete_checker_busy_rejections(self):
         all_busy = AutomatedStreamManager._summarize_quality_check_results(
             {

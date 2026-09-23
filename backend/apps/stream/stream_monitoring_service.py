@@ -257,7 +257,11 @@ class StreamMonitoringService:
                     if stream_id in current_streams:
                         new_streams = [sid for sid in current_streams if sid != stream_id]
                         from apps.core.api_utils import update_channel_streams, change_channel_stream
-                        success = update_channel_streams(session.channel_id, new_streams)
+                        success = update_channel_streams(
+                            session.channel_id,
+                            new_streams,
+                            expected_current_stream_ids=list(current_streams),
+                        )
                         
                         if success:
                             logger.info(f"Removed {reason} stream {stream_id} from Dispatcharr channel {session.channel_id}")
@@ -1139,7 +1143,9 @@ class StreamMonitoringService:
                 else:
                     logger.debug(f"Dropping alien stream {sid} from channel {session.channel_id}")
 
-        should_sync_order = new_order_ids != current_stream_ids or force_update
+        # force_update recalculates ranks after a status transition. It must not
+        # turn an unchanged assignment into another Dispatcharr PATCH.
+        should_sync_order = new_order_ids != current_stream_ids
         logger.debug(
             "Stream monitor order decision session=%s current=%s new=%s force=%s sync=%s",
             session_id,
@@ -1159,7 +1165,16 @@ class StreamMonitoringService:
                     if api_utils_module is None:
                         from apps.core import api_utils as api_utils_module
                     update_channel_streams = api_utils_module.update_channel_streams
-                    success = update_channel_streams(session.channel_id, new_order_ids)
+                    if not session.is_active:
+                        return
+                    owner = self.session_manager.get_session_owner(session.channel_id)
+                    if owner and owner != session_id:
+                        return
+                    success = update_channel_streams(
+                        session.channel_id,
+                        new_order_ids,
+                        expected_current_stream_ids=list(current_stream_ids),
+                    )
                     if success:
                         logger.debug(f"Reordered streams for session {session_id} to {new_order_ids}")
                         try:
@@ -1168,6 +1183,13 @@ class StreamMonitoringService:
                             logger.debug(
                                 f"Could not refresh UDI channel {session.channel_id} after sync: {refresh_error}"
                             )
+                    else:
+                        # The guarded writer refreshes UDI on a changed channel.
+                        # The next monitoring tick will rank against that state.
+                        logger.warning(
+                            "Skipped stale monitoring assignment for channel %s; recalculating on next tick",
+                            session.channel_id,
+                        )
                 except Exception as e:
                     logger.error(f"Failed to sync stream order for session {session_id}: {e}")
 

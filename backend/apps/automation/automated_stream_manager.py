@@ -3292,6 +3292,12 @@ class AutomatedStreamManager:
                     first_abort_message = result.get("message") or "Quality check was aborted"
             elif result.get("success") is False or result.get("error"):
                 failed_count += 1
+                if first_abort_message is None:
+                    first_abort_message = (
+                        result.get("error")
+                        or result.get("message")
+                        or "Quality check failed"
+                    )
 
         incomplete_count = max(0, expected_count - checked_count)
         stream_checker_busy = bool(
@@ -3304,7 +3310,7 @@ class AutomatedStreamManager:
             )
         )
         return {
-            "ok": aborted_count == 0 and incomplete_count == 0,
+            "ok": aborted_count == 0 and failed_count == 0 and incomplete_count == 0,
             "checked_count": checked_count,
             "expected_count": expected_count,
             "aborted_count": aborted_count,
@@ -6599,6 +6605,8 @@ class AutomatedStreamManager:
 
                         channels_to_check_sync = []
                         _target_stream_ids = {}
+                        from apps.stream.stream_session_manager import get_session_manager
+                        monitoring_channels = get_session_manager().get_channels_in_active_sessions()
 
                         for ch_id in channels_to_quality_check:
                             if self._abort_run_if_manual_stop_requested(active_periods=active_periods):
@@ -6606,6 +6614,12 @@ class AutomatedStreamManager:
                             # Normalise ch_id to int for all lookups. channels_to_quality_check
                             # may contain mixed int/str entries if populated from multiple sources.
                             _ch_id_int = int(ch_id)
+                            if _ch_id_int in monitoring_channels:
+                                logger.info(
+                                    "Skipping quality check for monitored channel %s",
+                                    _ch_id_int,
+                                )
+                                continue
                             check_all_streams = channel_check_all_streams.get(_ch_id_int, False)
                             logger.debug(
                                 f"Quality check loop: ch_id={ch_id!r}({type(ch_id).__name__}) "

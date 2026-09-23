@@ -1206,7 +1206,11 @@ class StreamSessionManager:
                         # Update channel with new stream list
                         # use api_utils to ensure proper update
                         from apps.core.api_utils import update_channel_streams
-                        success = update_channel_streams(session.channel_id, new_streams)
+                        success = update_channel_streams(
+                            session.channel_id,
+                            new_streams,
+                            expected_current_stream_ids=list(current_streams),
+                        )
                         
                         if success:
                             logger.debug(f"Removed quarantined stream {stream_id} from Dispatcharr channel {session.channel_id}")
