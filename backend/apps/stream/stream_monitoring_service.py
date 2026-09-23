@@ -41,6 +41,7 @@ logger = setup_logging(__name__)
 MONITOR_INTERVAL = 1.0  # seconds - how often to evaluate streams
 REFRESH_INTERVAL = 60.0  # seconds - how often to refresh stream list
 SCREENSHOT_CHECK_INTERVAL = 5.0  # seconds - how often to check for screenshot needs
+EXTERNAL_SYNC_VERIFY_INTERVAL = 15.0  # seconds - authoritative Dispatcharr drift check
 
 
 # Auto-quarantine thresholds
@@ -100,6 +101,7 @@ class StreamMonitoringService:
         # Centralized ThreadPool for I/O tasks
         self.io_pool = concurrent.futures.ThreadPoolExecutor(max_workers=20)
         self._state_lock = threading.Lock()
+        self._sync_verify_pending = set()
         
         # Active monitors: session_id -> stream_id -> FFmpegStreamMonitor
         self.monitors: Dict[str, Dict[int, FFmpegStreamMonitor]] = {}
@@ -366,18 +368,54 @@ class StreamMonitoringService:
             logger.warning(f"Session {session.session_id} lost ownership of channel {session.channel_id} to {owner}")
             return False
             
-        # Check if it's time to enforce sync
-        # Default 1000ms (1s) interval
+        # The configured interval controls local ranking and assignment checks.
+        # A forced PATCH at this cadence writes an unchanged channel every second.
+        # Fetch Dispatcharr's authoritative state less often to detect edits made
+        # outside StreamFlow; local status/rank changes still write immediately.
         interval = getattr(session, 'enforce_sync_interval_ms', 1000) / 1000.0
         last_sync = getattr(session, 'last_sync_time', 0.0)
         
         if current_time - last_sync >= interval:
-            # Trigger evaluation with force_update=True to enforce state
-            self._evaluate_session_streams(session.session_id, force_update=True)
+            last_verified = getattr(session, 'last_authoritative_sync_time', 0.0)
+            if current_time - last_verified >= EXTERNAL_SYNC_VERIFY_INTERVAL:
+                with self._state_lock:
+                    pending = session.session_id in self._sync_verify_pending
+                    if not pending:
+                        self._sync_verify_pending.add(session.session_id)
+                        # Mark the attempt even on failure so an unavailable
+                        # Dispatcharr does not cause a request on every tick.
+                        session.last_authoritative_sync_time = current_time
+                if not pending:
+                    try:
+                        self.io_pool.submit(
+                            self._verify_channel_sync, session.session_id, session.channel_id
+                        )
+                    except RuntimeError:
+                        with self._state_lock:
+                            self._sync_verify_pending.discard(session.session_id)
+            self._evaluate_session_streams(session.session_id, force_update=False)
             session.last_sync_time = current_time
             return True
             
         return False
+
+    def _verify_channel_sync(self, session_id: str, channel_id: int) -> None:
+        """Refresh one channel off the monitor worker; the next tick handles drift."""
+        try:
+            udi = get_udi_manager()
+            if not udi.refresh_channel_by_id(channel_id):
+                logger.warning(
+                    "Could not verify Dispatcharr channel %s for session %s",
+                    channel_id, session_id,
+                )
+        except Exception as exc:
+            logger.warning(
+                "Could not verify Dispatcharr channel %s for session %s: %s",
+                channel_id, session_id, exc,
+            )
+        finally:
+            with self._state_lock:
+                self._sync_verify_pending.discard(session_id)
     
     def _monitor_worker(self):
         """Worker thread for monitoring streams"""
@@ -1083,8 +1121,11 @@ class StreamMonitoringService:
         # Dispatcharr sync (Exclusive Ownership)
         # current_stream_ids is already defined above
         public_streams = [s for s in final_sorted_streams if s.status == 'stable']
-        if not public_streams and final_sorted_streams:
-             public_streams = final_sorted_streams
+        if not public_streams:
+            # A revived source enters review after its quarantine interval and
+            # can restore an otherwise empty channel. Sources still quarantined
+            # must never be reattached as the fallback.
+            public_streams = [s for s in final_sorted_streams if s.status == 'review']
         new_order_ids = [s.stream_id for s in public_streams]
         
         monitored_ids_set = set(new_order_ids)
