@@ -9722,12 +9722,49 @@ class StreamCheckerService:
                     
                     # Run validation scoped to this channel only
                     validation_results = automation_manager.validate_and_remove_non_matching_streams(channel_id=channel_id)
+                    if not isinstance(validation_results, dict) or (
+                        validation_results.get('success') is False
+                        or validation_results.get('aborted')
+                        or validation_results.get('error')
+                    ):
+                        clear_operation_progress()
+                        if isinstance(validation_results, dict) and validation_results.get('aborted'):
+                            logger.info("Stream validation aborted for channel %s", channel_name)
+                            return {
+                                'success': False,
+                                'error': 'aborted',
+                                'aborted': True,
+                                'channel_id': channel_id,
+                                'channel_name': channel_name,
+                            }
+                        validation_error = (
+                            validation_results.get('error')
+                            if isinstance(validation_results, dict) else None
+                        )
+                        logger.error(
+                            "Stream validation failed for channel %s: %s",
+                            channel_name,
+                            validation_error,
+                        )
+                        return {
+                            'success': False,
+                            'error': validation_error or 'stream_validation_failed',
+                            'channel_id': channel_id,
+                            'channel_name': channel_name,
+                        }
                     if validation_results.get("streams_removed", 0) > 0:
                         logger.info(f"✓ Removed {validation_results['streams_removed']} non-matching streams")
                     else:
                         logger.info("✓ No non-matching streams found to remove")
-                except Exception as e:
-                    logger.error(f"✗ Failed to validate streams: {e}")
+                except Exception:
+                    logger.error("Failed to validate streams for channel %s", channel_name, exc_info=True)
+                    clear_operation_progress()
+                    return {
+                        'success': False,
+                        'error': 'stream_validation_failed',
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                    }
             else:
                 logger.info(f"Step 4/6: Skipping stream validation (matching is disabled for this channel)")
                 update_single_channel_progress(
