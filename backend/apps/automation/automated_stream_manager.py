@@ -6294,19 +6294,19 @@ class AutomatedStreamManager:
                     if sync_ok:
                         logger.info("UDI cache synced after provider refresh")
                     else:
-                        logger.warning(
-                            "UDI cache sync after provider refresh reported warnings - "
-                            "proceeding with available cache"
+                        raise RuntimeError(
+                            "UDI cache sync failed after provider refresh; "
+                            "stream validation and assignment were not started"
                         )
                 except FetchCancelled:
                     if self._abort_run_if_manual_stop_requested(active_periods=active_periods):
                         return
                     raise
                 except Exception as _sync_err:
-                    logger.warning(
-                        f"UDI sync after provider refresh failed: {_sync_err} — "
-                        "proceeding with potentially stale cache"
-                    )
+                    raise RuntimeError(
+                        "UDI cache sync failed after provider refresh; "
+                        "stream validation and assignment were not started"
+                    ) from _sync_err
 
                 # Capture streams_after from the now-current cache for changelog and cleanup
                 changelog_tracking = self.config.get("enabled_features", {}).get("changelog_tracking", True)
