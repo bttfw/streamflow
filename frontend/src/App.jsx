@@ -180,7 +180,7 @@ function App() {
 
       <main className={cn(
         "min-w-0 flex-1 px-4 pb-24 pt-20 transition-all duration-300 ease-in-out sm:px-6 lg:px-8 lg:pb-8 lg:pt-8",
-        isCollapsed ? "lg:ml-20" : "lg:ml-64"
+        isCollapsed ? "lg:ml-20" : "lg:ml-56"
       )}>
         <div className="mx-auto max-w-[1600px] min-w-0">
           {startupGateActive ? (
