@@ -400,6 +400,118 @@ class TestGetStreamBitrate(unittest.TestCase):
 class TestGetStreamInfoAndBitrate(unittest.TestCase):
     """Test combined ffmpeg analysis with ffprobe safety fallbacks."""
 
+    def test_preemptible_probe_drains_large_stderr_and_keeps_bitrate(self):
+        """A warning flood must not trigger ffprobe or erase later FFmpeg stats."""
+        script = (
+            "import sys; "
+            "sys.stderr.write(('warning noise\\n' * 20000)); "
+            "sys.stderr.write('Input #0, mpegts, from synthetic:\\n'); "
+            "sys.stderr.write('  Stream #0:0: Video: h264, yuv420p, 1280x720, 30 fps\\n'); "
+            "sys.stderr.write('Output #0, mpegts, to pipe:1:\\n'); "
+            "sys.stderr.write('frame= 30 fps=30 size=500kB time=00:00:01.00 bitrate= 4123.0kbits/s speed=1.0x\\n'); "
+            "sys.stderr.flush()"
+        )
+        original_popen = subprocess.Popen
+        launches = []
+
+        def start_fixture(_command, **kwargs):
+            launches.append(_command[0])
+            return original_popen([sys.executable, '-c', script], **kwargs)
+
+        with patch.object(stream_check_utils.subprocess, 'Popen', side_effect=start_fixture):
+            result = get_stream_info_and_bitrate(
+                'http://synthetic.test/stream',
+                duration=1,
+                timeout=2,
+                stream_startup_buffer=0,
+                preempt_check=lambda: False,
+            )
+
+        self.assertEqual(launches, ['ffmpeg'])
+        self.assertEqual(result['status'], 'OK')
+        self.assertEqual(result['resolution'], '1280x720')
+        self.assertEqual(result['bitrate_kbps'], 4123.0)
+        self.assertEqual(result['bitrate_source'], 'ffmpeg_progress')
+        self.assertFalse(result['ffprobe_fallback_ran'])
+
+    def test_preemptible_visual_probe_keeps_detection_after_large_stderr(self):
+        script = (
+            "import sys; "
+            "sys.stderr.write(('warning noise\\n' * 20000)); "
+            "sys.stderr.write('black_start:0 black_end:10 black_duration:10\\n'); "
+            "sys.stderr.write('freeze_start: 0 freeze_end: 10 freeze_duration: 10\\n'); "
+            "sys.stderr.write('frame= 300 time=00:00:10.00 bitrate= 4000.0kbits/s\\n'); "
+            "sys.stderr.flush()"
+        )
+        original_popen = subprocess.Popen
+
+        def start_fixture(_command, **kwargs):
+            return original_popen([sys.executable, '-c', script], **kwargs)
+
+        with patch.object(stream_check_utils.subprocess, 'Popen', side_effect=start_fixture) as popen:
+            result = stream_check_utils._run_visual_detection_probe(
+                'http://synthetic.test/stream',
+                duration=30,
+                timeout=2,
+                user_agent='test',
+                stream_startup_buffer=0,
+                blank_check_enabled=True,
+                blank_check_min_duration=2,
+                blank_check_pixel_threshold=0.1,
+                blank_check_ratio_threshold=0.8,
+                freeze_check_enabled=True,
+                freeze_check_min_duration=5,
+                freeze_check_noise_threshold=0.001,
+                freeze_check_ratio_threshold=0.8,
+                hardware_acceleration=None,
+                preempt_check=lambda: False,
+            )
+
+        self.assertEqual(popen.call_count, 1)
+        self.assertTrue(result['visual_probe_completed'])
+        self.assertTrue(result['blank_detected'])
+        self.assertTrue(result['freeze_detected'])
+        self.assertFalse(result['visual_probe_incomplete'])
+
+    def test_preemptible_probe_keeps_bytes_read_bitrate_fallback(self):
+        script = (
+            "import sys; "
+            "sys.stderr.write(('warning noise\\n' * 20000)); "
+            "sys.stderr.write('Input #0, mpegts, from synthetic:\\n'); "
+            "sys.stderr.write('  Stream #0:0: Video: h264, yuv420p, 1280x720, 30 fps\\n'); "
+            "sys.stderr.write('Output #0, mpegts, to pipe:1:\\n'); "
+            "sys.stderr.write('frame= 30 time=00:00:01.00 bitrate=N/A\\n'); "
+            "sys.stderr.write('Statistics: 200000 bytes read\\n'); "
+            "sys.stderr.write('Statistics: 300000 bytes read\\n'); "
+            "sys.stderr.flush()"
+        )
+        original_popen = subprocess.Popen
+
+        def start_fixture(_command, **kwargs):
+            return original_popen([sys.executable, '-c', script], **kwargs)
+
+        with patch.object(stream_check_utils.subprocess, 'Popen', side_effect=start_fixture) as popen:
+            result = get_stream_info_and_bitrate(
+                'http://synthetic.test/stream',
+                duration=1,
+                timeout=2,
+                stream_startup_buffer=0,
+                preempt_check=lambda: False,
+            )
+
+        self.assertEqual(popen.call_count, 1)
+        self.assertEqual(result['status'], 'OK')
+        self.assertEqual(result['bitrate_kbps'], 4000.0)
+        self.assertEqual(result['bitrate_source'], 'ffmpeg_bytes_read_fallback')
+        self.assertFalse(result['ffprobe_fallback_ran'])
+
+    def test_visual_event_capture_overflow_is_incomplete(self):
+        capture = stream_check_utils._BoundedProbeStderr(visual=True)
+        event = 'black_start:0 black_end:1 black_duration:1\n'
+        capture.feed(event * (capture._VISUAL_EVENT_LIMIT // len(event) + 1))
+        capture.finish()
+        self.assertTrue(capture.incomplete)
+
     @patch('subprocess.run')
     def test_ffprobe_fallback_accepts_valid_media_after_ffmpeg_timeout(self, mock_run):
         """KPTV-style streams should not be marked dead when ffprobe proves media."""

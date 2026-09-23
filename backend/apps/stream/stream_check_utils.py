@@ -51,6 +51,7 @@ import shlex
 import subprocess
 import threading
 import time
+from collections import deque
 from datetime import datetime
 from typing import Callable, Dict, Optional, Tuple, Any, List
 
@@ -135,6 +136,121 @@ FREEZE_END_RE = re.compile(r'freeze_end:\s*(?P<end>-?[0-9]+(?:\.[0-9]+)?)')
 FREEZE_DURATION_RE = re.compile(r'freeze_duration:\s*(?P<duration>-?[0-9]+(?:\.[0-9]+)?)')
 FFMPEG_TIME_RE = re.compile(r'time=(?P<hours>\d+):(?P<minutes>\d+):(?P<seconds>\d+(?:\.\d+)?)')
 FFMPEG_BYTES_READ_RE = re.compile(r'Statistics:\s*(?P<bytes>\d+)\s+bytes\s+read', re.IGNORECASE)
+
+
+class _BoundedProbeStderr:
+    """Drain FFmpeg stderr without losing bitrate or visual detector evidence.
+
+    FFmpeg's info/warning output can exceed the OS pipe buffer before a
+    preemptible probe exits. Keep only the lines consumed by the analysis
+    parsers plus bounded diagnostics; visual detection is marked incomplete if
+    its event budget is ever exceeded instead of reporting a false clean scan.
+    """
+
+    _MAX_LINE = 32768
+    _METADATA_LIMIT = 65536
+    _DIAGNOSTIC_HEAD_LIMIT = 16384
+    _DIAGNOSTIC_TAIL_LIMIT = 32768
+    _VISUAL_EVENT_LIMIT = 524288
+
+    def __init__(self, *, visual: bool) -> None:
+        self.visual = visual
+        self._pending = ''
+        self._metadata = []
+        self._metadata_size = 0
+        self._diagnostic_head = []
+        self._diagnostic_head_size = 0
+        self._diagnostic_tail = deque()
+        self._diagnostic_tail_size = 0
+        self._events = []
+        self._event_size = 0
+        self._last_bitrate_line = ''
+        self._last_media_line = ''
+        self._last_media_time = -1.0
+        self._bytes_read = 0
+        self.incomplete = False
+
+    def feed(self, chunk: str) -> None:
+        self._pending += chunk
+        while True:
+            delimiter = re.search(r'[\r\n]', self._pending)
+            if delimiter is None:
+                if len(self._pending) > self._MAX_LINE:
+                    # Keep the end, where FFmpeg's stats/event marker appears.
+                    self._pending = self._pending[-self._MAX_LINE:]
+                    if self.visual:
+                        self.incomplete = True
+                return
+            line = self._pending[:delimiter.start()]
+            self._pending = self._pending[delimiter.end():]
+            if line:
+                self._accept_line(line)
+
+    def finish(self) -> None:
+        if self._pending:
+            self._accept_line(self._pending)
+            self._pending = ''
+
+    def _accept_line(self, line: str) -> None:
+        line_size = len(line) + 1
+        if self.visual and any(marker in line for marker in (
+            'black_start:', 'black_end:', 'freeze_start:', 'freeze_end:',
+        )):
+            if self._event_size + line_size <= self._VISUAL_EVENT_LIMIT:
+                self._events.append(line)
+                self._event_size += line_size
+            else:
+                self.incomplete = True
+            return
+
+        if 'Input #' in line or 'Output #' in line or 'Stream #' in line:
+            if self._metadata_size + line_size <= self._METADATA_LIMIT:
+                self._metadata.append(line)
+                self._metadata_size += line_size
+            else:
+                self.incomplete = True
+            return
+
+        if 'bitrate=' in line and 'bits/s' in line:
+            if re.search(r'bitrate=\s*[0-9]+(?:\.[0-9]+)?\s*[kmg]?bits/s', line, re.IGNORECASE):
+                self._last_bitrate_line = line[-self._MAX_LINE:]
+
+        media_time = _parse_ffmpeg_progress_time(line)
+        if media_time is not None and media_time >= self._last_media_time:
+            self._last_media_time = media_time
+            self._last_media_line = line[-self._MAX_LINE:]
+
+        bytes_matches = list(FFMPEG_BYTES_READ_RE.finditer(line))
+        if bytes_matches:
+            self._bytes_read += sum(int(match.group('bytes')) for match in bytes_matches)
+            return
+        if media_time is not None:
+            return
+
+        # Diagnostics are useful for error classification and hardware fallback,
+        # but do not need the complete provider/FFmpeg warning flood.
+        bounded_line = line[:self._MAX_LINE]
+        bounded_size = len(bounded_line) + 1
+        if self._diagnostic_head_size + bounded_size <= self._DIAGNOSTIC_HEAD_LIMIT:
+            self._diagnostic_head.append(bounded_line)
+            self._diagnostic_head_size += bounded_size
+        else:
+            self._diagnostic_tail.append(bounded_line)
+            self._diagnostic_tail_size += bounded_size
+            while self._diagnostic_tail_size > self._DIAGNOSTIC_TAIL_LIMIT:
+                dropped = self._diagnostic_tail.popleft()
+                self._diagnostic_tail_size -= len(dropped) + 1
+
+    def render(self) -> str:
+        lines = self._metadata + self._diagnostic_head + list(self._diagnostic_tail)
+        lines.extend(self._events)
+        if self._last_bitrate_line:
+            lines.append(self._last_bitrate_line)
+        if self._last_media_line and self._last_media_line != self._last_bitrate_line:
+            lines.append(self._last_media_line)
+        if self._bytes_read:
+            lines.append(f'Statistics: {self._bytes_read} bytes read')
+        return '\n'.join(lines)
 
 
 class StreamProbePreempted(Exception):
@@ -548,6 +664,43 @@ def _run_ffmpeg_with_optional_fallback(
             stderr=stderr,
             text=text,
         )
+        stderr_capture = None
+        stderr_reader = None
+        if (
+            stderr == subprocess.PIPE
+            and text
+            and context in {'stream analysis', 'visual stream analysis'}
+        ):
+            stderr_capture = _BoundedProbeStderr(
+                visual=context == 'visual stream analysis'
+            )
+            stderr_pipe = process.stderr
+            # communicate() must not race the reader for the same pipe. The
+            # reader drains while the viewer-preemption loop watches FFmpeg.
+            process.stderr = None
+
+            def _drain_stderr() -> None:
+                try:
+                    while chunk := stderr_pipe.read(4096):
+                        stderr_capture.feed(chunk)
+                except Exception as exc:
+                    stderr_capture.incomplete = True
+                    logger.warning("FFmpeg stderr drain failed during %s: %s", context, exc)
+                finally:
+                    try:
+                        stderr_capture.finish()
+                    except Exception as exc:
+                        stderr_capture.incomplete = True
+                        logger.warning("FFmpeg stderr capture failed during %s: %s", context, exc)
+                    finally:
+                        stderr_pipe.close()
+
+            stderr_reader = threading.Thread(
+                target=_drain_stderr,
+                daemon=True,
+                name=f"StreamProbe-Stderr[{context}]",
+            )
+            stderr_reader.start()
         deadline = time.monotonic() + timeout
         preempted = False
         timed_out = False
@@ -593,6 +746,13 @@ def _run_ffmpeg_with_optional_fallback(
                     stdout_data, stderr_data = '', ''
                 timed_out = True
 
+            if stderr_reader is not None:
+                stderr_reader.join(timeout=PROBE_PREEMPT_PROCESS_GRACE_SECONDS)
+                if stderr_reader.is_alive():
+                    timed_out = True
+                    stderr_capture.incomplete = True
+                stderr_data = stderr_capture.render()
+
             if timed_out:
                 raise subprocess.TimeoutExpired(
                     command_to_run,
@@ -600,12 +760,15 @@ def _run_ffmpeg_with_optional_fallback(
                     output=stdout_data,
                     stderr=stderr_data,
                 )
-            return subprocess.CompletedProcess(
+            completed = subprocess.CompletedProcess(
                 command_to_run,
                 process.returncode,
                 stdout=stdout_data,
                 stderr=stderr_data,
             )
+            if stderr_capture is not None:
+                completed.stderr_capture_incomplete = stderr_capture.incomplete
+            return completed
         finally:
             if process.poll() is None:
                 process.kill()
@@ -615,6 +778,8 @@ def _run_ffmpeg_with_optional_fallback(
                     logger.error(
                         "Provider probe process remained alive after the bounded final cleanup window"
                     )
+            if stderr_reader is not None:
+                stderr_reader.join(timeout=PROBE_PREEMPT_PROCESS_GRACE_SECONDS)
 
     try:
         result = _run(command)
@@ -1536,6 +1701,13 @@ def _run_visual_detection_probe(
         elapsed = time.time() - start
         result_data['visual_probe_elapsed_time'] = elapsed
         result_data['visual_probe_completed'] = visual_result.returncode == 0
+
+        if getattr(visual_result, 'stderr_capture_incomplete', False):
+            return _mark_visual_probe_incomplete(
+                result_data,
+                reason='stderr_capture_incomplete',
+                elapsed=elapsed,
+            )
 
         output = visual_result.stderr or ''
         if blank_check_enabled:
