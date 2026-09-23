@@ -6,6 +6,10 @@ from types import SimpleNamespace
 from flask import Flask
 
 from apps.api import channel_handlers
+from apps.channels import logo_cache
+from apps.channels import logo_verification_service
+from apps.config import dispatcharr_config
+from apps.udi import manager as udi_manager
 
 
 PNG = b"\x89PNG\r\n\x1a\n" + b"small-logo"
@@ -23,7 +27,7 @@ class FakeResponse:
 
     def raise_for_status(self):
         if self.status_code >= 400:
-            raise channel_handlers.requests.HTTPError(f"{self.status_code}")
+            raise logo_cache.requests.HTTPError(f"{self.status_code}")
 
     def iter_content(self, *, chunk_size):
         assert chunk_size <= 64 * 1024
@@ -58,7 +62,7 @@ def test_logo_cache_downloads_once_with_safe_headers(monkeypatch, tmp_path):
         requests.append((url, kwargs))
         return upstream
 
-    monkeypatch.setattr(channel_handlers.requests, "get", get)
+    monkeypatch.setattr(logo_cache.requests, "get", get)
     first = _fetch(tmp_path, "http://10.10.30.20/logo.png")
     second = _fetch(tmp_path, "http://10.10.30.20/logo.png")
 
@@ -75,8 +79,8 @@ def test_logo_cache_downloads_once_with_safe_headers(monkeypatch, tmp_path):
 
 
 def test_logo_rejects_oversized_content_length_before_reading(monkeypatch, tmp_path):
-    upstream = FakeResponse(headers={"Content-Length": str(channel_handlers.MAX_LOGO_BYTES + 1)})
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda *_args, **_kwargs: upstream)
+    upstream = FakeResponse(headers={"Content-Length": str(logo_cache.MAX_LOGO_BYTES + 1)})
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: upstream)
 
     result = _fetch(tmp_path, "http://10.10.30.20/logo.png")
 
@@ -88,7 +92,7 @@ def test_logo_rejects_oversized_content_length_before_reading(monkeypatch, tmp_p
 
 def test_logo_rejects_chunked_response_above_limit_and_cleans_up(monkeypatch, tmp_path):
     upstream = FakeResponse(chunks=[b"x" * (64 * 1024)] * 65)
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda *_args, **_kwargs: upstream)
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: upstream)
 
     result = _fetch(tmp_path, "http://10.10.30.20/logo.png")
 
@@ -106,7 +110,7 @@ def test_logo_redirect_checks_target_before_following(monkeypatch, tmp_path):
         calls.append(url)
         return upstream
 
-    monkeypatch.setattr(channel_handlers.requests, "get", get)
+    monkeypatch.setattr(logo_cache.requests, "get", get)
 
     result = _fetch(tmp_path, "https://1.1.1.1/logo.png")
 
@@ -124,14 +128,14 @@ def test_logo_allows_public_redirect_and_configured_dispatcharr_loopback(monkeyp
         calls.append(url)
         return [redirect, image][len(calls) - 1]
 
-    monkeypatch.setattr(channel_handlers.requests, "get", get)
+    monkeypatch.setattr(logo_cache.requests, "get", get)
     first = _fetch(tmp_path, "https://1.1.1.1/logo.png")
     assert _status(first) == 200
     assert calls == ["https://1.1.1.1/logo.png", "https://1.0.0.1/logo.png"]
     assert redirect.closed and image.closed
 
     first.close()
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda url, **_kwargs: calls.append(url) or image)
+    monkeypatch.setattr(logo_cache.requests, "get", lambda url, **_kwargs: calls.append(url) or image)
     (tmp_path / "logos_cache" / "logo_7.png").unlink()
     calls.clear()
     assert _status(_fetch(tmp_path, "http://127.0.0.1:9191/api/logos/7")) == 200
@@ -140,7 +144,7 @@ def test_logo_allows_public_redirect_and_configured_dispatcharr_loopback(monkeyp
 
 def test_logo_blocks_unrelated_loopback_and_embedded_credentials(monkeypatch, tmp_path):
     calls = []
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda *_args, **_kwargs: calls.append(1))
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: calls.append(1))
 
     assert _status(_fetch(tmp_path, "http://127.0.0.1:5000/admin")) == 422
     assert _status(_fetch(tmp_path, "http://user:pass@10.10.30.20/logo.png")) == 422
@@ -149,12 +153,12 @@ def test_logo_blocks_unrelated_loopback_and_embedded_credentials(monkeypatch, tm
 
 def test_logo_blocks_hostname_resolving_to_metadata_address(monkeypatch, tmp_path):
     monkeypatch.setattr(
-        channel_handlers.socket,
+        logo_cache.socket,
         "getaddrinfo",
         lambda *_args, **_kwargs: [(2, 1, 6, "", ("169.254.169.254", 80))],
     )
     calls = []
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda *_args, **_kwargs: calls.append(1))
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: calls.append(1))
 
     assert _status(_fetch(tmp_path, "http://fake-provider.example/logo.png")) == 422
     assert calls == []
@@ -164,19 +168,19 @@ def test_logo_stops_after_three_redirects(monkeypatch, tmp_path):
     upstream = FakeResponse(status=302, headers={"Location": "/next"})
     calls = []
     monkeypatch.setattr(
-        channel_handlers.requests,
+        logo_cache.requests,
         "get",
         lambda url, **_kwargs: calls.append(url) or upstream,
     )
 
     assert _status(_fetch(tmp_path, "http://10.10.30.20/logo.png")) == 422
-    assert len(calls) == channel_handlers.MAX_LOGO_REDIRECTS + 1
+    assert len(calls) == logo_cache.MAX_LOGO_REDIRECTS + 1
     assert upstream.closed
 
 
 def test_logo_validates_image_bytes_and_sandboxes_svg(monkeypatch, tmp_path):
     upstream = FakeResponse(body=SVG, headers={"Content-Type": "image/svg+xml"})
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda *_args, **_kwargs: upstream)
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: upstream)
 
     result = _fetch(tmp_path, "http://10.10.30.20/logo.svg")
     assert _status(result) == 200
@@ -196,12 +200,60 @@ def test_logo_cache_prunes_old_entries_but_keeps_new_image(monkeypatch, tmp_path
     cache.mkdir()
     old = cache / "logo_1.png"
     old.write_bytes(PNG)
-    monkeypatch.setattr(channel_handlers, "MAX_LOGO_CACHE_BYTES", len(PNG) + 1)
+    monkeypatch.setattr(logo_cache, "MAX_LOGO_CACHE_BYTES", len(PNG) + 1)
     upstream = FakeResponse(body=PNG, headers={"Content-Type": "image/png"})
-    monkeypatch.setattr(channel_handlers.requests, "get", lambda *_args, **_kwargs: upstream)
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: upstream)
 
     result = _fetch(tmp_path, "http://10.10.30.20/logo.png")
 
     assert _status(result) == 200
     assert not old.exists()
     assert (cache / "logo_7.png").exists()
+
+
+def test_visual_logo_verification_uses_same_bounded_cache(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "logos_cache"
+    monkeypatch.setattr(logo_verification_service, "LOGOS_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(
+        udi_manager,
+        "get_udi_manager",
+        lambda: SimpleNamespace(get_logo_by_id=lambda _id: {"url": "http://10.10.30.20/logo.png"}),
+    )
+    monkeypatch.setattr(
+        dispatcharr_config,
+        "get_dispatcharr_config",
+        lambda: SimpleNamespace(get_base_url=lambda: "http://127.0.0.1:9191"),
+    )
+    upstream = FakeResponse(body=PNG, headers={"Content-Type": "image/png"})
+    calls = []
+    monkeypatch.setattr(logo_cache.requests, "get", lambda url, **_kwargs: calls.append(url) or upstream)
+
+    path = logo_verification_service.get_cached_logo_path(7)
+
+    assert path == str(cache_dir / "logo_7.png")
+    assert Path(path).read_bytes() == PNG
+    assert logo_verification_service.get_cached_logo_path(7) == path
+    assert calls == ["http://10.10.30.20/logo.png"]
+    assert upstream.closed
+
+
+def test_visual_logo_verification_rejects_oversized_provider_body(monkeypatch, tmp_path):
+    cache_dir = tmp_path / "logos_cache"
+    monkeypatch.setattr(logo_verification_service, "LOGOS_CACHE_DIR", cache_dir)
+    monkeypatch.setattr(
+        udi_manager,
+        "get_udi_manager",
+        lambda: SimpleNamespace(get_logo_by_id=lambda _id: {"url": "http://10.10.30.20/logo.png"}),
+    )
+    monkeypatch.setattr(
+        dispatcharr_config,
+        "get_dispatcharr_config",
+        lambda: SimpleNamespace(get_base_url=lambda: "http://127.0.0.1:9191"),
+    )
+    upstream = FakeResponse(headers={"Content-Length": str(logo_cache.MAX_LOGO_BYTES + 1)})
+    monkeypatch.setattr(logo_cache.requests, "get", lambda *_args, **_kwargs: upstream)
+
+    assert logo_verification_service.get_cached_logo_path(7) is None
+    assert upstream.reads == 0
+    assert upstream.closed
+    assert list(cache_dir.iterdir()) == []
