@@ -3,7 +3,7 @@
 import threading
 import time
 from types import SimpleNamespace
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 from flask import Flask
 
@@ -122,6 +122,26 @@ def test_successful_revive_clears_persistent_dead_marker():
     assert result is True
     assert stream.status == 'review'
     assert DeadStreamsTracker().get_dead_stream_reasons([stream.url]) == {}
+
+
+def test_revive_rolls_back_remote_assignment_when_session_save_fails():
+    manager, session, stream = _manager_with_stream(status='quarantined', reason='dead')
+    db = get_db_manager()
+    assert db.mark_stream_dead(stream.url, 101, stream.name, 9, reason='offline')
+    manager._save_sessions.side_effect = [False, True]
+
+    with patch('apps.core.api_utils.add_streams_to_channel', return_value=1), \
+         patch('apps.core.api_utils._fetch_authoritative_channel_stream_ids', return_value=[101, 102]), \
+         patch('apps.core.api_utils.update_channel_streams', return_value=True) as write:
+        result = manager.revive_stream(session.session_id, 101)
+
+    assert result is False
+    assert stream.status == 'quarantined'
+    assert stream.status_reason == 'dead'
+    assert 101 in session.quarantined_stream_ids
+    assert DeadStreamsTracker().get_dead_stream_reasons([stream.url]) == {stream.url: 'offline'}
+    write.assert_called_once_with(9, [102], expected_current_stream_ids=[101, 102])
+    assert manager._save_sessions.call_args_list == [call(wait=True), call(wait=True)]
 
 
 def test_failed_dead_marker_clear_does_not_attach_quarantined_stream():

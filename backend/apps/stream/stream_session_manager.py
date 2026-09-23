@@ -312,6 +312,7 @@ class StreamSessionManager:
             session.close()
 
         self._last_streams_refresh = 0
+        self._streams_refresh_lock = threading.Lock()
         logger.info("StreamSessionManager initialized with SQL backend")
 
         self._load_sessions()
@@ -323,6 +324,8 @@ class StreamSessionManager:
         """Initialize volatile fields for reused or legacy singleton instances."""
         if not hasattr(self, '_last_streams_refresh'):
             self._last_streams_refresh = 0
+        if not hasattr(self, '_streams_refresh_lock'):
+            self._streams_refresh_lock = threading.Lock()
         if not hasattr(self, '_session_save_condition'):
             self._session_save_condition = threading.Condition()
             self._session_save_generation = 0
@@ -653,19 +656,36 @@ class StreamSessionManager:
         # Always refresh the specific channel to ensure metadata (name, logo) is up to date
         udi.refresh_channel_by_id(channel_id)
         
-        # Refresh global stream list with rate limiting (30s cooldown)
-        # This prevents API spam when batch creating sessions while keeping data reasonably fresh
+        # Reuse a recent live UDI refresh, including one performed by another
+        # service. A stale cache still requires the complete stream payload:
+        # Dispatcharr's ID endpoint cannot detect changed names or URLs.
         if not skip_stream_refresh:
-            current_time = time.time()
-            if current_time - self._last_streams_refresh > 30:
-                logger.info("Refreshing global stream list (cooldown passed)")
-                if udi.refresh_streams():
-                    self._last_streams_refresh = current_time
-            else:
-                logger.debug(
-                    f"Skipping stream list refresh (cooldown active, "
-                    f"{30 - (current_time - self._last_streams_refresh):.1f}s remaining)"
-                )
+            # Serializing this check prevents simultaneous session requests from
+            # launching duplicate full stream fetches.
+            with self._streams_refresh_lock:
+                current_time = time.time()
+                last_refresh = self._last_streams_refresh
+                try:
+                    if udi.is_network_ready() and udi.cache.is_valid('streams'):
+                        cache_refresh = udi.get_cache_last_refresh('streams')
+                        if isinstance(cache_refresh, datetime):
+                            cache_refresh_time = cache_refresh.timestamp()
+                            if 0 <= current_time - cache_refresh_time <= 30:
+                                last_refresh = max(last_refresh, cache_refresh_time)
+                except Exception as exc:
+                    # Unknown cache freshness cannot justify skipping a fetch.
+                    logger.debug("Could not verify live UDI stream cache freshness: %s", exc)
+
+                if current_time - last_refresh > 30:
+                    logger.info("Refreshing global stream list (cooldown passed)")
+                    if udi.refresh_streams():
+                        # A large fetch can exceed the cooldown by itself.
+                        self._last_streams_refresh = time.time()
+                else:
+                    logger.debug(
+                        "Skipping stream list refresh (cooldown active, %.1fs remaining)",
+                        30 - (current_time - last_refresh),
+                    )
 
         
         channel = udi.get_channel_by_id(channel_id)
@@ -1362,7 +1382,8 @@ class StreamSessionManager:
                                 f"Could not confirm revived stream {stream_id} "
                                 f"in Dispatcharr channel {session.channel_id}"
                             )
-                    self._save_sessions()
+                    if not self._save_sessions(wait=True):
+                        raise RuntimeError("Could not persist revived session state")
                 except Exception as e:
                     logger.error("Failed to revive stream %s: %s", stream_id, e)
                     stream_info.status = 'quarantined'
@@ -1403,7 +1424,10 @@ class StreamSessionManager:
                         session.channel_id, reason=marker_reason,
                     ):
                         logger.error("Could not restore dead stream marker for stream %s", stream_id)
-                    self._save_sessions()
+                    if not self._save_sessions(wait=True):
+                        logger.error(
+                            "Could not persist quarantine rollback for stream %s", stream_id
+                        )
                     return False
 
                 logger.info(f"Revived stream {stream_id} in session {session_id} (moved to review)")
