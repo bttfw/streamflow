@@ -1716,7 +1716,10 @@ def _run_visual_detection_probe(
         result_data['visual_probe_elapsed_time'] = elapsed
         result_data['visual_probe_completed'] = visual_result.returncode == 0
 
-        if getattr(visual_result, 'stderr_capture_incomplete', False):
+        # A real probe sets an explicit bool. Generic result mocks may produce
+        # a truthy child Mock for any missing attribute; only True means the
+        # bounded reader actually lost detector evidence.
+        if getattr(visual_result, 'stderr_capture_incomplete', False) is True:
             return _mark_visual_probe_incomplete(
                 result_data,
                 reason='stderr_capture_incomplete',
