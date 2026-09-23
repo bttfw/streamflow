@@ -1,10 +1,15 @@
-from unittest.mock import Mock
+import threading
+from unittest.mock import Mock, patch
+
+from sqlalchemy import event
 
 from apps.automation.automated_stream_manager import (
     AutomatedStreamManager,
     RegexChannelMatcher,
     _compile_stream_search_regex,
 )
+from apps.database.manager import get_db_manager
+from apps.stream.dead_streams_tracker import DeadStreamsTracker
 
 
 def test_match_streams_batch_calls_matcher_once_per_stream_signature():
@@ -32,6 +37,106 @@ def test_match_streams_batch_calls_matcher_once_per_stream_signature():
     assert manager.regex_matcher.match_stream_to_channels.call_count == 1
     assert assignments["101"] == ["s1", "s2"]
     assert len(details["101"]) == 2
+
+
+def test_matching_uses_one_dead_snapshot_and_preserves_revival(clean_test_db):
+    manager = AutomatedStreamManager.__new__(AutomatedStreamManager)
+    manager.regex_matcher = Mock()
+    manager.regex_matcher.match_stream_to_channels.return_value = ["101"]
+    manager.dead_streams_tracker = DeadStreamsTracker()
+    dead_url = "http://example.test/dead"
+    get_db_manager().mark_stream_dead(dead_url, 1, "Dead", reason="offline")
+    streams = [
+        {"id": i, "name": f"Stream {i}", "url": dead_url if i == 1 else f"http://example.test/{i}"}
+        for i in range(1, 201)
+    ]
+    queries = []
+
+    def record(_connection, _cursor, statement, _parameters, _context, _executemany):
+        if statement.lstrip().upper().startswith("SELECT") and "dead_streams" in statement:
+            queries.append(statement)
+
+    event.listen(clean_test_db, "before_cursor_execute", record)
+    try:
+        dead_urls = frozenset(manager.dead_streams_tracker.get_dead_stream_reasons())
+        assignments, _ = manager._match_streams_batch(
+            streams, {"101": set()}, True, {"101": False}, dead_stream_urls=dead_urls
+        )
+        assert assignments["101"] == list(range(2, 201))
+        assert len(queries) == 1
+
+        revival_assignments, _ = manager._match_streams_batch(
+            streams[:2], {"101": set()}, True, {"101": True}, dead_stream_urls=dead_urls
+        )
+        assert revival_assignments["101"] == [1, 2]
+        assert len(queries) == 1
+
+        allowed_assignments, _ = manager._match_streams_batch(
+            streams[:2], {"101": set()}, False, {"101": False}
+        )
+        assert allowed_assignments["101"] == [1, 2]
+        assert len(queries) == 1
+
+        fallback_assignments, _ = manager._match_streams_batch(
+            streams[:2], {"101": set()}, True, {"101": False}
+        )
+        assert fallback_assignments["101"] == [2]
+        assert len(queries) == 3
+    finally:
+        event.remove(clean_test_db, "before_cursor_execute", record)
+
+
+def test_discovery_shares_one_dead_snapshot_with_matching_workers():
+    manager = AutomatedStreamManager.__new__(AutomatedStreamManager)
+    manager.config = {
+        "enabled_features": {"auto_stream_discovery": True, "changelog_tracking": False},
+        "enabled_m3u_accounts": [],
+    }
+    manager._manual_stop_requested = threading.Event()
+    manager._lock = threading.Lock()
+    manager._m3u_accounts_cache = [{"id": 1, "name": "Provider", "is_active": True}]
+    manager.regex_matcher = Mock()
+    manager.regex_matcher.has_regex_patterns.return_value = True
+    manager.regex_matcher.get_match_by_tvg_id.return_value = False
+    manager.regex_matcher.match_stream_to_channels.return_value = ["10"]
+    manager._filter_channels_by_profile = Mock(side_effect=lambda channels, _reason: channels)
+    manager._record_channel_visibility_events = Mock()
+    manager._is_dead_stream_removal_enabled = Mock(return_value=True)
+    manager._update_run_progress = Mock()
+    manager._get_channel_visibility_config = Mock(return_value={})
+    manager.dead_streams_tracker = Mock()
+    manager.dead_streams_tracker.get_dead_stream_reasons.return_value = {
+        "http://example.test/dead": "offline"
+    }
+    manager.dead_streams_tracker.is_dead.side_effect = AssertionError("per-stream DB lookup")
+
+    automation_config = Mock()
+    automation_config.get_effective_configuration.return_value = {
+        "profile": {
+            "stream_matching": {"enabled": True, "match_priority_order": ["regex"]},
+            "stream_checking": {"enabled": False},
+        }
+    }
+    udi = Mock()
+    udi.get_channel_streams.return_value = []
+    session_manager = Mock()
+    session_manager.get_channels_in_active_sessions.return_value = []
+
+    with patch("apps.automation.automated_stream_manager.get_streams", return_value=[
+            {"id": 1, "name": "Dead", "url": "http://example.test/dead", "m3u_account": 1}
+        ]), patch("apps.automation.automated_stream_manager.get_channels", return_value=[
+            {"id": 10, "name": "Channel 10"}
+        ]), patch("apps.automation.automated_stream_manager.get_udi_manager", return_value=udi), \
+         patch("apps.automation.automated_stream_manager.get_automation_config_manager", return_value=automation_config), \
+         patch("apps.stream.stream_session_manager.get_session_manager", return_value=session_manager), \
+         patch("apps.automation.automated_stream_manager.assign_streams_to_channel") as assign:
+        result = manager._discover_and_assign_streams_impl(force=True, skip_check_trigger=True)
+
+    assert result.get("success") is not False
+    assert result["assignment_count"] == {}
+    manager.dead_streams_tracker.get_dead_stream_reasons.assert_called_once_with()
+    manager.dead_streams_tracker.is_dead.assert_not_called()
+    assign.assert_not_called()
 
 
 def test_regex_compilation_cache_reuses_compiled_pattern(monkeypatch):

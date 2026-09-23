@@ -20,7 +20,7 @@ import copy
 from functools import lru_cache
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Callable, Dict, Iterable, List, Optional, Tuple, Any, Union
+from typing import AbstractSet, Callable, Dict, Iterable, List, Optional, Tuple, Any, Union
 import concurrent.futures
 from collections import defaultdict
 
@@ -3913,7 +3913,8 @@ class AutomatedStreamManager:
                              channel_tvg_map: Dict[str, str] = None,
                              channel_to_match_priorities: Dict[str, List[str]] = None,
                              channel_to_group_map: Dict[str, Any] = None,
-                             channel_name_map: Dict[str, str] = None) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict]]]:
+                             channel_name_map: Dict[str, str] = None,
+                             dead_stream_urls: Optional[AbstractSet[str]] = None) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict]]]:
         """
         Process a batch of streams for regex matching.
         This method is designed to be run in a separate thread.
@@ -3925,6 +3926,7 @@ class AutomatedStreamManager:
             channel_to_revive_enabled: Mapping of channel IDs to their Stream Revival setting
             channel_tvg_map: Mapping of channel IDs to their TVG-ID (optional)
             channel_to_match_priorities: Mapping of channel IDs to priority order (optional)
+            dead_stream_urls: Immutable dead URL snapshot shared by this run's workers.
             
         Returns:
             Tuple of (assignments, assignment_details)
@@ -3974,26 +3976,22 @@ class AutomatedStreamManager:
             if not matching_channels:
                 continue
 
-            # Check if any matching channel allows reviving dead streams
-            any_revive_enabled = False
-            for ch_id in matching_channels:
-                if channel_to_revive_enabled.get(str(ch_id), False):
-                    any_revive_enabled = True
-                    break
-
-            # Skip dead streams if removal is enabled globally
-            if self.dead_streams_tracker and self.dead_streams_tracker.is_dead(stream_url):
-                if dead_stream_removal_enabled:
-                    # If any matched channel has Stream Revival enabled, we DON'T skip it, 
-                    # even if it's offline. We want it added so the checker can re-evaluate it.
-                    if any_revive_enabled:
-                        # logger.debug(f"Allowing dead stream {stream_id} for potential revival")
-                        pass
-                    else:
-                        # Revival is disabled for all matching channels - skip ALL dead streams
-                        # This prevents the continuous re-addition loop for low quality/failed streams
-                        # logger.debug(f"Skipping dead stream {stream_id} (revival disabled)")
-                        continue
+            # The shared snapshot avoids one SQLite session for every matched
+            # stream. If its initial read failed, preserve the prior per-URL
+            # behavior for this matching pass.
+            if dead_stream_removal_enabled and self.dead_streams_tracker:
+                is_dead = (
+                    stream_url in dead_stream_urls
+                    if dead_stream_urls is not None
+                    else self.dead_streams_tracker.is_dead(stream_url)
+                )
+                if is_dead and not any(
+                    channel_to_revive_enabled.get(str(ch_id), False)
+                    for ch_id in matching_channels
+                ):
+                    # Revival is disabled for all matches: keep dead streams
+                    # out of assignment until a check revives them.
+                    continue
             
             for channel_id in matching_channels:
                 # Check if stream is already in this channel
@@ -4621,6 +4619,16 @@ class AutomatedStreamManager:
                 dead_stream_removal_enabled = not allow_dead_streams
             else:
                 dead_stream_removal_enabled = self._is_dead_stream_removal_enabled()
+
+            dead_stream_urls = None
+            if dead_stream_removal_enabled and self.dead_streams_tracker:
+                try:
+                    dead_stream_urls = frozenset(self.dead_streams_tracker.get_dead_stream_reasons())
+                except Exception as snapshot_error:
+                    logger.warning(
+                        "Dead stream snapshot unavailable (%s); checking matched URLs individually",
+                        type(snapshot_error).__name__,
+                    )
             
             # Create batches
             batches = [all_streams[i:i + batch_size] for i in range(0, total_streams, batch_size)]
@@ -4636,7 +4644,8 @@ class AutomatedStreamManager:
                 future_to_batch = {
                     executor.submit(self._match_streams_batch, batch, channel_streams, 
                                    dead_stream_removal_enabled,
-                                   channel_to_revive_enabled, channel_tvg_map, channel_to_match_priorities, channel_to_group_map, channel_name_map): batch 
+                                   channel_to_revive_enabled, channel_tvg_map, channel_to_match_priorities, channel_to_group_map, channel_name_map,
+                                   dead_stream_urls): batch
                     for batch in batches
                 }
                 
