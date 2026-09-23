@@ -877,48 +877,48 @@ export default function Dashboard() {
             </div>
           </CardHeader>
           <CardContent className="space-y-4">
-            <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-              <div className="rounded-md border bg-muted/30 p-3">
+            <div className="grid grid-cols-2 gap-2 sm:gap-3 lg:grid-cols-3 xl:grid-cols-6">
+              <div className="min-w-0 rounded-md border bg-muted/30 p-2 sm:p-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                   <Activity className="h-3.5 w-3.5" />
                   Current Stage
                 </div>
-                <div className="mt-1 truncate text-lg font-semibold">{runDisplayStageLabel}</div>
+                <div className="mt-1 break-words text-base font-semibold sm:truncate sm:text-lg" title={runDisplayStageLabel}>{runDisplayStageLabel}</div>
               </div>
-              <div className="rounded-md border bg-muted/30 p-3">
+              <div className="min-w-0 rounded-md border bg-muted/30 p-2 sm:p-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                   <Clock3 className="h-3.5 w-3.5" />
                   Updated
                 </div>
-                <div className="mt-1 text-lg font-semibold">{formatTime(displayRunUpdatedAt)}</div>
+                <div className="mt-1 text-base font-semibold sm:text-lg">{formatTime(displayRunUpdatedAt)}</div>
               </div>
-              <div className="rounded-md border bg-muted/30 p-3">
+              <div className="min-w-0 rounded-md border bg-muted/30 p-2 sm:p-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                   <Timer className="h-3.5 w-3.5" />
                   Duration
                 </div>
-                <div className="mt-1 text-lg font-semibold">{formatDuration(displayRunElapsedSeconds)}</div>
+                <div className="mt-1 text-base font-semibold sm:text-lg">{formatDuration(displayRunElapsedSeconds)}</div>
               </div>
-              <div className="rounded-md border bg-muted/30 p-3">
+              <div className="min-w-0 rounded-md border bg-muted/30 p-2 sm:p-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                   <Timer className="h-3.5 w-3.5" />
                   Stage Time
                 </div>
-                <div className="mt-1 text-lg font-semibold">{formatDuration(displayRunStageElapsedSeconds)}</div>
+                <div className="mt-1 text-base font-semibold sm:text-lg">{formatDuration(displayRunStageElapsedSeconds)}</div>
               </div>
-              <div className="rounded-md border bg-muted/30 p-3">
+              <div className="min-w-0 rounded-md border bg-muted/30 p-2 sm:p-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                   <Activity className="h-3.5 w-3.5" />
                   Progress
                 </div>
-                <div className="mt-1 text-lg font-semibold">{Math.round(runProgressPercent)}%</div>
+                <div className="mt-1 text-base font-semibold sm:text-lg">{Math.round(runProgressPercent)}%</div>
               </div>
-              <div className="rounded-md border bg-muted/30 p-3">
+              <div className="min-w-0 rounded-md border bg-muted/30 p-2 sm:p-3">
                 <div className="flex items-center gap-2 text-xs font-medium uppercase text-muted-foreground">
                   <Database className="h-3.5 w-3.5" />
                   API p95 / p99
                 </div>
-                <div className="mt-1 text-lg font-semibold">
+                <div className="mt-1 break-words text-sm font-semibold sm:text-lg">
                   {apiTiming.p95_seconds != null ? formatLatency(apiTiming.p95_seconds) : 'N/A'}
                   <span className="mx-1 text-muted-foreground">/</span>
                   {apiTiming.p99_seconds != null ? formatLatency(apiTiming.p99_seconds) : 'N/A'}

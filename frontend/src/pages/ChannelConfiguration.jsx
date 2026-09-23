@@ -2328,28 +2328,30 @@ export default function ChannelConfiguration() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto p-1">
-            <TabsTrigger value="regex" className="shrink-0">Regex Configuration</TabsTrigger>
-            <TabsTrigger value="ordering" className="shrink-0">Channel Order</TabsTrigger>
-            <TabsTrigger value="groups" className="shrink-0">Group Configuration</TabsTrigger>
+          <TabsList className="grid h-auto w-full grid-cols-2 gap-1 p-1 sm:flex sm:flex-wrap sm:justify-start">
+            <TabsTrigger value="regex" className="min-h-11 min-w-0 px-2 sm:min-h-0 sm:px-3">Regex Configuration</TabsTrigger>
+            <TabsTrigger value="ordering" className="min-h-11 min-w-0 px-2 sm:min-h-0 sm:px-3">Channel Order</TabsTrigger>
+            <TabsTrigger value="groups" className="col-span-2 min-h-11 min-w-0 px-2 sm:col-span-1 sm:min-h-0 sm:px-3">Group Configuration</TabsTrigger>
           </TabsList>
 
           <TabsContent value="regex" className="space-y-6">
-            {/* Search Bar and Export/Import Buttons */}
+            {/* Search and profile context */}
             <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
               <div className="relative w-full sm:max-w-md sm:flex-1">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   type="text"
+                  aria-label="Search channels"
                   placeholder="Search channels by name, number, or ID..."
                   value={searchQuery}
                   onChange={(e) => setSearchQuery(e.target.value)}
-                  className="pl-10 pr-10"
+                  className="h-11 pl-10 pr-10 sm:h-10"
                 />
                 {searchQuery && (
                   <Button
                     variant="ghost"
                     size="sm"
+                    aria-label="Clear channel search"
                     className="absolute right-1 top-1/2 transform -translate-y-1/2 h-7 w-7 p-0"
                     onClick={clearSearch}
                   >
@@ -2384,228 +2386,232 @@ export default function ChannelConfiguration() {
                 </Tooltip>
               )}
 
-              {/* Export/Import Buttons */}
-              <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto">
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleExportPatterns}
-                >
-                  <Download className="h-4 w-4 mr-2" />
-                  Export Regex
-                </Button>
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={() => document.getElementById('import-file-input').click()}
-                >
-                  <Upload className="h-4 w-4 mr-2" />
-                  Import Regex
-                </Button>
-                <input
-                  id="import-file-input"
-                  type="file"
-                  accept=".json"
-                  onChange={handleImportPatterns}
-                  style={{ display: 'none' }}
-                />
-              </div>
             </div>
 
             <div className="space-y-4">
-              {/* Filter and Action Bar */}
+              {/* Group filter stays visible; bulk and maintenance actions stay available on demand. */}
               <Card>
-                <CardContent className="p-4">
-                  <div className="flex flex-wrap items-center gap-6">
-                    {/* Section: Sorting */}
-                    <div className="flex items-center gap-4">
-                      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Sorting</div>
-                      <div className="flex items-center gap-2">
-                        <Select value={filterByGroup} onValueChange={setFilterByGroup}>
-                          <SelectTrigger id="group-filter" className="h-8 w-[140px]">
-                            <SelectValue placeholder="Group" />
-                          </SelectTrigger>
-                          <SelectContent>
-                            <SelectItem value="all">All Groups</SelectItem>
-                            {groups.map(group => (
-                              <SelectItem key={group.id} value={String(group.id)}>
-                                {group.name}
-                              </SelectItem>
-                            ))}
-                          </SelectContent>
-                        </Select>
-                      </div>
-
-                      <div className="flex items-center gap-2">
-                        <Checkbox
-                          id="sort-by-group"
-                          checked={sortByGroup}
-                          onCheckedChange={setSortByGroup}
-                        />
-                        <Label htmlFor="sort-by-group" className="text-xs whitespace-nowrap cursor-pointer">
-                          Sort by Group
-                        </Label>
-                      </div>
-                    </div>
-
-                    {/* Section: Matching */}
-                    <div className="flex items-center gap-3">
-                      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Matching</div>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => setBulkDialogOpen(true)}
-                            disabled={selectedChannels.size === 0}
-                            className="h-8 w-8 p-0"
-                          >
-                            <Plus className="h-4 w-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent><p>Add Regex</p></TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={handleBulkHealthCheck}
-                            disabled={selectedChannels.size === 0 || bulkCheckingChannels}
-                            className="h-8 w-8 p-0 text-blue-600 dark:text-green-500 border-blue-600 dark:border-green-500"
-                          >
-                            {bulkCheckingChannels ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent><p>Health Check</p></TooltipContent>
-                      </Tooltip>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={handleOpenEditCommon}
-                            disabled={selectedChannels.size === 0}
-                            className="h-8 w-8 p-0"
-                          >
-                            <Edit2 className="h-4 w-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent><p>Mass Regex Edit</p></TooltipContent>
-                      </Tooltip>
-
-                      <DropdownMenu>
-                        <Tooltip>
-                          <TooltipTrigger asChild>
-                            <DropdownMenuTrigger asChild>
-                              <Button variant="outline" size="sm" disabled={selectedChannels.size === 0} className="h-8 w-10 px-0 font-bold text-xs ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2">
-                                ID
-                              </Button>
-                            </DropdownMenuTrigger>
-                          </TooltipTrigger>
-                          <TooltipContent>Match Settings</TooltipContent>
-                        </Tooltip>
-                        <DropdownMenuContent>
-                          <DropdownMenuLabel>Match by TVG-ID</DropdownMenuLabel>
-                          <DropdownMenuSeparator />
-                          <DropdownMenuItem onClick={() => handleBulkMatchSettings(true)}>Enable</DropdownMenuItem>
-                          <DropdownMenuItem onClick={() => handleBulkMatchSettings(false)}>Disable</DropdownMenuItem>
-                        </DropdownMenuContent>
-                      </DropdownMenu>
-                    </div>
-
-                    <Separator orientation="vertical" className="h-6 hidden lg:block" />
-
-                    {/* Section: Periods */}
-                    <div className="flex items-center gap-3">
-                      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Periods</div>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={handleBatchAssignPeriods}
-                            disabled={selectedChannels.size === 0}
-                            className="h-8 px-2"
-                          >
-                            <div className="flex items-center gap-0.5">
-                              <Clock className="h-4 w-4" />
-                              <Plus className="h-3 w-3" />
-                            </div>
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Assign Periods</TooltipContent>
-                      </Tooltip>
-
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            variant="outline"
-                            size="sm"
-                            onClick={() => setBulkPeriodEditOpen(true)}
-                            disabled={selectedChannels.size === 0}
-                            className="h-8 w-8 p-0"
-                          >
-                            <Edit className="h-4 w-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent>Mass Period Edit</TooltipContent>
-                      </Tooltip>
-                    </div>
-
-                    <Separator orientation="vertical" className="h-6 hidden lg:block" />
-
-                    {/* Section: EPG Profile */}
-                    <div className="flex items-center gap-3">
-                      <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">EPG Profile</div>
-                      <Select
-                        value={assignEpgProfileId}
-                        onValueChange={(v) => {
-                          setAssignEpgProfileId(v)
-                          handleBatchAssignEpgProfile(v)
-                        }}
-                        disabled={selectedChannels.size === 0}
-                      >
-                        <SelectTrigger className="h-8 w-[160px] text-xs">
-                          <SelectValue placeholder="Assign EPG profile…" />
+                <CardContent className="space-y-3 p-3 sm:p-4">
+                  <div className="flex flex-wrap items-end justify-between gap-3">
+                    <div className="min-w-0 flex-1 sm:max-w-xs">
+                      <Label htmlFor="group-filter" className="mb-1.5 block text-xs font-medium">Filter by group</Label>
+                      <Select value={filterByGroup} onValueChange={setFilterByGroup}>
+                        <SelectTrigger id="group-filter" className="h-11 w-full sm:h-10">
+                          <SelectValue placeholder="Group" />
                         </SelectTrigger>
                         <SelectContent>
-                          <SelectItem value="none">— Remove EPG profile —</SelectItem>
-                          {profiles.map((profile) => (
-                            <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>
+                          <SelectItem value="all">All Groups</SelectItem>
+                          {groups.map(group => (
+                            <SelectItem key={group.id} value={String(group.id)}>
+                              {group.name}
+                            </SelectItem>
                           ))}
                         </SelectContent>
                       </Select>
                     </div>
-
-                    <Separator orientation="vertical" className="h-6 hidden lg:block" />
-
-                    <div className="flex items-center gap-2 ml-auto">
-                      <Badge variant="secondary" className="whitespace-nowrap text-[10px]">
+                    {selectedChannels.size > 0 && (
+                      <Badge variant="secondary" className="mb-1 whitespace-nowrap text-xs">
                         {selectedChannels.size} selected
                       </Badge>
-                      <Tooltip>
-                        <TooltipTrigger asChild>
-                          <Button
-                            size="sm"
-                            variant="destructive"
-                            onClick={() => setDeleteDialogOpen(true)}
-                            disabled={selectedChannels.size === 0}
-                            className="h-8 w-8 p-0"
-                          >
-                            <Trash2 className="h-4 w-4" />
-                          </Button>
-                        </TooltipTrigger>
-                        <TooltipContent><p>Delete Selected</p></TooltipContent>
-                      </Tooltip>
-                    </div>
+                    )}
                   </div>
+                  <details className="group rounded-md border bg-muted/20">
+                    <summary className="flex cursor-pointer list-none items-center justify-between gap-2 rounded-md px-3 py-3 text-sm font-medium focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring [&::-webkit-details-marker]:hidden">
+                      <span className="min-w-0">
+                        <span className="block">Advanced channel tools</span>
+                        <span className="block text-xs font-normal text-muted-foreground">Bulk actions, import and export</span>
+                      </span>
+                      <ChevronDown aria-hidden="true" className="h-4 w-4 shrink-0 transition-transform group-open:rotate-180" />
+                    </summary>
+                    <div className="space-y-4 border-t p-3 sm:p-4">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Button variant="outline" size="sm" onClick={handleExportPatterns} className="min-h-11 sm:min-h-0">
+                          <Download className="h-4 w-4" /> Export Regex
+                        </Button>
+                        <Button variant="outline" size="sm" onClick={() => document.getElementById('import-file-input').click()} className="min-h-11 sm:min-h-0">
+                          <Upload className="h-4 w-4" /> Import Regex
+                        </Button>
+                        <input id="import-file-input" type="file" accept=".json" onChange={handleImportPatterns} className="sr-only" tabIndex={-1} />
+                      </div>
+                      <div className="flex flex-wrap items-center gap-4 sm:gap-6">
+                        {/* Section: Sorting */}
+                        <div className="flex flex-wrap items-center gap-3">
+                          <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Sorting</div>
+                          <div className="flex items-center gap-2">
+                            <Checkbox
+                              id="sort-by-group"
+                              checked={sortByGroup}
+                              onCheckedChange={setSortByGroup}
+                            />
+                            <Label htmlFor="sort-by-group" className="text-xs whitespace-nowrap cursor-pointer">
+                              Sort by Group
+                            </Label>
+                          </div>
+                        </div>
+
+                        {/* Section: Matching */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Matching</div>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={() => setBulkDialogOpen(true)}
+                                disabled={selectedChannels.size === 0}
+                                className="h-11 gap-1 px-2 sm:h-8 sm:w-8 sm:p-0"
+                              >
+                                <Plus className="h-4 w-4" />
+                                <span className="text-xs sm:sr-only">Add Regex</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Add Regex</p></TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={handleBulkHealthCheck}
+                                disabled={selectedChannels.size === 0 || bulkCheckingChannels}
+                                className="h-11 gap-1 px-2 text-blue-600 border-blue-600 dark:text-green-500 dark:border-green-500 sm:h-8 sm:w-8 sm:p-0"
+                              >
+                                {bulkCheckingChannels ? <Loader2 className="h-4 w-4 animate-spin" /> : <Activity className="h-4 w-4" />}
+                                <span className="text-xs sm:sr-only">Health Check</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Health Check</p></TooltipContent>
+                          </Tooltip>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="outline"
+                                onClick={handleOpenEditCommon}
+                                disabled={selectedChannels.size === 0}
+                                className="h-11 gap-1 px-2 sm:h-8 sm:w-8 sm:p-0"
+                              >
+                                <Edit2 className="h-4 w-4" />
+                                <span className="text-xs sm:sr-only">Mass Regex Edit</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Mass Regex Edit</p></TooltipContent>
+                          </Tooltip>
+
+                          <DropdownMenu>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <DropdownMenuTrigger asChild>
+                                  <Button variant="outline" size="sm" disabled={selectedChannels.size === 0} className="h-11 px-2 font-bold text-xs ring-offset-background transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 sm:h-8 sm:w-10 sm:px-0">
+                                    <span className="sm:hidden">TVG-ID Matching</span><span className="hidden sm:inline">ID</span>
+                                  </Button>
+                                </DropdownMenuTrigger>
+                              </TooltipTrigger>
+                              <TooltipContent>Match Settings</TooltipContent>
+                            </Tooltip>
+                            <DropdownMenuContent>
+                              <DropdownMenuLabel>Match by TVG-ID</DropdownMenuLabel>
+                              <DropdownMenuSeparator />
+                              <DropdownMenuItem onClick={() => handleBulkMatchSettings(true)}>Enable</DropdownMenuItem>
+                              <DropdownMenuItem onClick={() => handleBulkMatchSettings(false)}>Disable</DropdownMenuItem>
+                            </DropdownMenuContent>
+                          </DropdownMenu>
+                        </div>
+
+                        <Separator orientation="vertical" className="h-6 hidden lg:block" />
+
+                        {/* Section: Periods */}
+                        <div className="flex flex-wrap items-center gap-2">
+                          <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">Periods</div>
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={handleBatchAssignPeriods}
+                                disabled={selectedChannels.size === 0}
+                                className="h-11 gap-1 px-2 sm:h-8"
+                              >
+                                <div className="flex items-center gap-0.5">
+                                  <Clock className="h-4 w-4" />
+                                  <Plus className="h-3 w-3" />
+                                </div>
+                                <span className="text-xs sm:sr-only">Assign Periods</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Assign Periods</TooltipContent>
+                          </Tooltip>
+
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                variant="outline"
+                                size="sm"
+                                onClick={() => setBulkPeriodEditOpen(true)}
+                                disabled={selectedChannels.size === 0}
+                                className="h-11 gap-1 px-2 sm:h-8 sm:w-8 sm:p-0"
+                              >
+                                <Edit className="h-4 w-4" />
+                                <span className="text-xs sm:sr-only">Mass Period Edit</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent>Mass Period Edit</TooltipContent>
+                          </Tooltip>
+                        </div>
+
+                        <Separator orientation="vertical" className="h-6 hidden lg:block" />
+
+                        {/* Section: EPG Profile */}
+                        <div className="flex min-w-0 flex-wrap items-center gap-2">
+                          <div className="text-[10px] font-bold text-muted-foreground uppercase tracking-wider">EPG Profile</div>
+                          <Select
+                            value={assignEpgProfileId}
+                            onValueChange={(v) => {
+                              setAssignEpgProfileId(v)
+                              handleBatchAssignEpgProfile(v)
+                            }}
+                            disabled={selectedChannels.size === 0}
+                          >
+                            <SelectTrigger className="h-11 w-[160px] max-w-full text-xs sm:h-8">
+                              <SelectValue placeholder="Assign EPG profile…" />
+                            </SelectTrigger>
+                            <SelectContent>
+                              <SelectItem value="none">— Remove EPG profile —</SelectItem>
+                              {profiles.map((profile) => (
+                                <SelectItem key={profile.id} value={profile.id}>{profile.name}</SelectItem>
+                              ))}
+                            </SelectContent>
+                          </Select>
+                        </div>
+
+                        <Separator orientation="vertical" className="h-6 hidden lg:block" />
+
+                        <div className="flex items-center gap-2 sm:ml-auto">
+                          <Tooltip>
+                            <TooltipTrigger asChild>
+                              <Button
+                                size="sm"
+                                variant="destructive"
+                                onClick={() => setDeleteDialogOpen(true)}
+                                disabled={selectedChannels.size === 0}
+                                className="h-11 gap-1 px-2 sm:h-8 sm:w-8 sm:p-0"
+                              >
+                                <Trash2 className="h-4 w-4" />
+                                <span className="text-xs sm:sr-only">Delete Regex</span>
+                              </Button>
+                            </TooltipTrigger>
+                            <TooltipContent><p>Delete Selected</p></TooltipContent>
+                          </Tooltip>
+                        </div>
+                      </div>
+                    </div>
+                  </details>
                 </CardContent>
               </Card>
 
               {/* Pagination info and controls at top */}
               {displayChannels.length > 0 && (
-                <div className="flex items-center justify-between">
+                <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
                   <div className="text-sm text-muted-foreground">
                     Showing {startIndex + 1}-{Math.min(endIndex, displayChannels.length)} of {displayChannels.length} channels
                   </div>
