@@ -5403,7 +5403,7 @@ class StreamCheckerService:
                         queue_entry_token=queue_entry_token,
                     )
 
-            update_authorized, _ = self._run_channel_side_effect_if_authorized(
+            update_authorized, update_succeeded = self._run_channel_side_effect_if_authorized(
                 channel_id,
                 queue_entry_token,
                 lambda: update_channel_streams(
@@ -5419,6 +5419,10 @@ class StreamCheckerService:
                     channel_id,
                     channel_name,
                     queue_entry_token=queue_entry_token,
+                )
+            if not update_succeeded:
+                raise RuntimeError(
+                    f"Dispatcharr rejected stream assignment for channel {channel_id}"
                 )
             
             # Verify the update
@@ -5715,6 +5719,7 @@ class StreamCheckerService:
                 'dead_streams_count': 0,
                 'revived_streams_count': 0,
                 'checked_streams': [],
+                'success': False,
                 'error': str(e)
             }
         
@@ -6741,7 +6746,7 @@ class StreamCheckerService:
                         queue_entry_token=queue_entry_token,
                     )
 
-            update_authorized, _ = self._run_channel_side_effect_if_authorized(
+            update_authorized, update_succeeded = self._run_channel_side_effect_if_authorized(
                 channel_id,
                 queue_entry_token,
                 lambda: update_channel_streams(
@@ -6757,6 +6762,10 @@ class StreamCheckerService:
                     channel_id,
                     channel_name,
                     queue_entry_token=queue_entry_token,
+                )
+            if not update_succeeded:
+                raise RuntimeError(
+                    f"Dispatcharr rejected stream assignment for channel {channel_id}"
                 )
             
             # Verify the update was applied correctly
@@ -7038,7 +7047,9 @@ class StreamCheckerService:
             return {
                 'dead_streams_count': 0,
                 'revived_streams_count': 0,
-                'checked_streams': []
+                'checked_streams': [],
+                'success': False,
+                'error': str(e),
             }
         
         finally:
@@ -8942,7 +8953,12 @@ class StreamCheckerService:
                     results[channel_id] = channel_result
                     with self.lock:
                         if self.sync_batch_state.get('generation') == sync_generation and self.sync_batch_state.get('active'):
-                            if isinstance(channel_result, dict) and channel_result.get('aborted'):
+                            if (
+                                not isinstance(channel_result, dict)
+                                or channel_result.get('aborted')
+                                or channel_result.get('success') is False
+                                or channel_result.get('error')
+                            ):
                                 self.sync_batch_state['failed'] += 1
                             else:
                                 self.sync_batch_state['completed'] += 1
@@ -9817,6 +9833,15 @@ class StreamCheckerService:
                         'success': False,
                         'error': 'aborted',
                         'aborted': True,
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                    }
+                if check_result.get('success') is False or check_result.get('error'):
+                    clear_operation_progress()
+                    return {
+                        **check_result,
+                        'success': False,
+                        'error': check_result.get('error') or 'channel_check_failed',
                         'channel_id': channel_id,
                         'channel_name': channel_name,
                     }
