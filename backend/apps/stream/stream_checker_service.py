@@ -1360,22 +1360,19 @@ class StreamCheckerService:
     @staticmethod
     def _build_write_back_valid_stream_ids(
         udi: Any,
-        assignment_stream_ids: List[int],
         dead_stream_removal_enabled: bool,
     ) -> Optional[set]:
-        """Return valid IDs for write-back without losing assigned cache misses."""
+        """Return cached IDs; the writer verifies cache misses with Dispatcharr."""
         if dead_stream_removal_enabled:
             return None
 
-        valid_stream_ids = set()
         try:
             get_valid_stream_ids = getattr(udi, 'get_valid_stream_ids', None)
             if callable(get_valid_stream_ids):
-                valid_stream_ids.update(get_valid_stream_ids() or set())
+                return set(get_valid_stream_ids() or set())
         except Exception as exc:
             logger.warning("Could not read UDI valid stream IDs before write-back: %s", exc)
-        valid_stream_ids.update(assignment_stream_ids or [])
-        return valid_stream_ids
+        return set()
 
     @staticmethod
     def _get_uncached_channel_stream_ids(
@@ -1399,6 +1396,26 @@ class StreamCheckerService:
             if sid not in cached_stream_id_set
             and (not dead_stream_removal_enabled or sid not in dead_stream_ids)
         ]
+
+    @staticmethod
+    def _limit_write_back_stream_ids(
+        stream_ids: List[int],
+        stream_limit: int,
+        protected_stream_ids: set,
+    ) -> List[int]:
+        """Apply the channel limit to the final assignment, keeping active viewers."""
+        ordered_ids = list(dict.fromkeys(stream_ids))
+        if stream_limit <= 0 or len(ordered_ids) <= stream_limit:
+            return ordered_ids
+
+        protected = set(ordered_ids).intersection(protected_stream_ids or set())
+        capacity = max(stream_limit, len(protected))
+        retained = set(protected)
+        for stream_id in ordered_ids:
+            if len(retained) >= capacity:
+                break
+            retained.add(stream_id)
+        return [stream_id for stream_id in ordered_ids if stream_id in retained]
 
     def _is_stream_dead(self, stream_data: Dict[str, Any], channel_id: Optional[int] = None, threshold_config: Optional[Dict[str, Any]] = None) -> Tuple[bool, str]:
         """
@@ -5344,13 +5361,11 @@ class StreamCheckerService:
             # Dead streams have already been filtered from analyzed_streams if removal is enabled
             # If removal is disabled, allow them to remain in the channel
             
-            # Preserve any stream IDs that are assigned to the channel in Dispatcharr but
-            # were not returned by get_channel_streams() due to a stale UDI stream cache.
-            # Without this guard, a stale cache causes those streams to be silently dropped
-            # when the checker PATCHes the channel's stream list back to Dispatcharr.
+            # Compare with the loaded cache IDs, not reordered_ids: the latter has
+            # already been truncated by the profile stream limit.
             _uncached_ids = self._get_uncached_channel_stream_ids(
                 assigned_stream_ids,
-                set(reordered_ids),
+                set(current_stream_ids),
                 dead_stream_removal_enabled,
                 dead_stream_ids,
             )
@@ -5362,10 +5377,14 @@ class StreamCheckerService:
                     f"{_uncached_ids[:5]}{'...' if len(_uncached_ids) > 5 else ''}"
                 )
                 reordered_ids.extend(_uncached_ids)
+            reordered_ids = self._limit_write_back_stream_ids(
+                reordered_ids,
+                stream_limit,
+                protected_active_stream_ids,
+            )
 
             write_back_valid_stream_ids = self._build_write_back_valid_stream_ids(
                 udi,
-                assigned_stream_ids,
                 dead_stream_removal_enabled,
             )
 
@@ -6680,13 +6699,11 @@ class StreamCheckerService:
             # Dead streams have already been filtered from analyzed_streams if removal is enabled
             # If removal is disabled, allow them to remain in the channel
 
-            # Preserve any stream IDs that are assigned to the channel in Dispatcharr but
-            # were not returned by get_channel_streams() due to a stale UDI stream cache.
-            # Without this guard, a stale cache causes those streams to be silently dropped
-            # when the checker PATCHes the channel's stream list back to Dispatcharr.
+            # Compare with the loaded cache IDs, not reordered_ids: the latter has
+            # already been truncated by the profile stream limit.
             _uncached_ids = self._get_uncached_channel_stream_ids(
                 assigned_stream_ids,
-                set(reordered_ids),
+                set(current_stream_ids),
                 dead_stream_removal_enabled,
                 dead_stream_ids,
             )
@@ -6698,10 +6715,14 @@ class StreamCheckerService:
                     f"{_uncached_ids[:5]}{'...' if len(_uncached_ids) > 5 else ''}"
                 )
                 reordered_ids.extend(_uncached_ids)
+            reordered_ids = self._limit_write_back_stream_ids(
+                reordered_ids,
+                stream_limit,
+                protected_active_stream_ids,
+            )
 
             write_back_valid_stream_ids = self._build_write_back_valid_stream_ids(
                 udi,
-                assigned_stream_ids,
                 dead_stream_removal_enabled,
             )
 
