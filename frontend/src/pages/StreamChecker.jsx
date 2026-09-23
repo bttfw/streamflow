@@ -18,6 +18,7 @@ import { formatDuration } from '@/lib/time-format.js'
 import { getExternalStaleDiagnosticsDisplay } from '@/lib/external-stale-diagnostics-display.js'
 import { getQueueEtaDisplay } from '@/lib/queue-eta-display.js'
 import { getCurrentProgressDisplay } from '@/lib/stream-checker-progress-display.js'
+import { loadStreamCheckerPoll } from '@/lib/stream-checker-poll.js'
 import { getHardwareAnalysisPathDisplay, getHardwareOperatorNote, getHardwareRuntimeDeviceLabel } from '@/lib/hardware-status-display.js'
 import {
   getParallelProgressBadgeText,
@@ -114,11 +115,8 @@ export default function StreamChecker() {
 
   const loadData = async (includeSettings = true) => {
     try {
-      const [statusResult, progressResult, configResult, hardwareResult] = await Promise.allSettled([
-        streamCheckerAPI.getStatus(),
-        streamCheckerAPI.getProgress(),
-        ...(includeSettings ? [streamCheckerAPI.getConfig(), streamCheckerAPI.getHardwareStatus()] : []),
-      ])
+      const { statusResult, progressResult, configResult, hardwareResult } =
+        await loadStreamCheckerPoll(streamCheckerAPI, includeSettings)
       if (statusResult.status === 'fulfilled') {
         const latestStatus = statusResult.value.data
         setStatus(latestStatus)
