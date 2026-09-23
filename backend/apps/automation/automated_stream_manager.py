@@ -936,7 +936,8 @@ class RegexChannelMatcher:
                                stream_tvg_id: Optional[str] = None, channel_tvg_ids: Optional[Dict[str, str]] = None,
                                channel_match_priorities: Optional[Dict[str, List[str]]] = None,
                                channel_to_group_map: Optional[Dict[str, Any]] = None,
-                               channel_name_map: Optional[Dict[str, str]] = None) -> List[str]:
+                               channel_name_map: Optional[Dict[str, str]] = None,
+                               allowed_channel_ids: Optional[AbstractSet[str]] = None) -> List[str]:
         """
         Match a stream name and optionally TVG-ID to channels using regex patterns and TVG-ID matching.
         
@@ -946,6 +947,7 @@ class RegexChannelMatcher:
             stream_tvg_id: The TVG-ID of the stream (optional)
             channel_tvg_ids: Dictionary mapping channel_id -> tvg_id (optional, for optimization)
             channel_match_priorities: Dictionary mapping channel_id -> ['tvg', 'regex'] or ['regex', 'tvg'] (optional)
+            allowed_channel_ids: Optional target channel IDs for a single-channel check.
             
         Returns:
             List of channel IDs that match the stream
@@ -958,12 +960,17 @@ class RegexChannelMatcher:
         channel_to_group_map = channel_to_group_map or {}
         channel_name_map = channel_name_map or {}
 
-        # Iterate all target channels when available so group-only configs are considered.
-        explicit_channel_ids = set(self.channel_patterns.get("patterns", {}).keys())
-        if channel_tvg_ids:
-            explicit_channel_ids.update(str(cid) for cid in channel_tvg_ids.keys())
-        if channel_to_group_map:
-            explicit_channel_ids.update(str(cid) for cid in channel_to_group_map.keys())
+        # A single-channel check can evaluate only its requested channel. The
+        # effective config lookup below still handles channel and group patterns.
+        if allowed_channel_ids is not None:
+            explicit_channel_ids = {str(cid) for cid in allowed_channel_ids}
+        else:
+            # Include TVG and group-only channels in full-run matching.
+            explicit_channel_ids = set(self.channel_patterns.get("patterns", {}).keys())
+            if channel_tvg_ids:
+                explicit_channel_ids.update(str(cid) for cid in channel_tvg_ids.keys())
+            if channel_to_group_map:
+                explicit_channel_ids.update(str(cid) for cid in channel_to_group_map.keys())
 
         for channel_id in explicit_channel_ids:
             group_id = channel_to_group_map.get(str(channel_id))
@@ -3920,7 +3927,8 @@ class AutomatedStreamManager:
                              channel_to_match_priorities: Dict[str, List[str]] = None,
                              channel_to_group_map: Dict[str, Any] = None,
                              channel_name_map: Dict[str, str] = None,
-                             dead_stream_urls: Optional[AbstractSet[str]] = None) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict]]]:
+                             dead_stream_urls: Optional[AbstractSet[str]] = None,
+                             allowed_channel_ids: Optional[AbstractSet[str]] = None) -> Tuple[Dict[str, List[str]], Dict[str, List[Dict]]]:
         """
         Process a batch of streams for regex matching.
         This method is designed to be run in a separate thread.
@@ -3933,6 +3941,7 @@ class AutomatedStreamManager:
             channel_tvg_map: Mapping of channel IDs to their TVG-ID (optional)
             channel_to_match_priorities: Mapping of channel IDs to priority order (optional)
             dead_stream_urls: Immutable dead URL snapshot shared by this run's workers.
+            allowed_channel_ids: Optional target channel IDs for a single-channel check.
             
         Returns:
             Tuple of (assignments, assignment_details)
@@ -3971,15 +3980,17 @@ class AutomatedStreamManager:
             
             matching_channels = stream_match_cache.get(match_cache_key)
             if matching_channels is None:
-                matching_channels = tuple(match_stream_to_channels(
-                    stream_name,
-                    stream_m3u_account,
-                    stream_tvg_id,
-                    channel_tvg_map,
-                    channel_to_match_priorities,
-                    channel_to_group_map,
-                    channel_name_map,
-                ))
+                match_args = (
+                    stream_name, stream_m3u_account, stream_tvg_id,
+                    channel_tvg_map, channel_to_match_priorities,
+                    channel_to_group_map, channel_name_map,
+                )
+                if allowed_channel_ids is None:
+                    matching_channels = tuple(match_stream_to_channels(*match_args))
+                else:
+                    matching_channels = tuple(match_stream_to_channels(
+                        *match_args, allowed_channel_ids=allowed_channel_ids,
+                    ))
                 stream_match_cache[match_cache_key] = matching_channels
 
             if not matching_channels:
@@ -4216,6 +4227,10 @@ class AutomatedStreamManager:
         if not force and not self.config.get("enabled_features", {}).get("auto_stream_discovery", True):
             logger.info("Stream discovery is disabled in configuration")
             return {}
+
+        # The channel loops below reuse ``channel_id`` for their local channel.
+        # Preserve the caller's scope before those loops run.
+        requested_channel_id = channel_id
         
         try:
             # Reload patterns to ensure we have the latest changes
@@ -4654,6 +4669,10 @@ class AutomatedStreamManager:
             
             # Create batches
             batches = [all_streams[i:i + batch_size] for i in range(0, total_streams, batch_size)]
+            allowed_channel_ids = (
+                frozenset((str(requested_channel_id),))
+                if requested_channel_id is not None else None
+            )
             
             completed_count = 0
             last_log_pct = -1
@@ -4663,11 +4682,15 @@ class AutomatedStreamManager:
             future_to_batch = {}
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
             try:
+                single_channel_match_kwargs = (
+                    {"allowed_channel_ids": allowed_channel_ids}
+                    if allowed_channel_ids is not None else {}
+                )
                 future_to_batch = {
                     executor.submit(self._match_streams_batch, batch, channel_streams, 
                                    dead_stream_removal_enabled,
                                    channel_to_revive_enabled, channel_tvg_map, channel_to_match_priorities, channel_to_group_map, channel_name_map,
-                                   dead_stream_urls): batch
+                                   dead_stream_urls, **single_channel_match_kwargs): batch
                     for batch in batches
                 }
                 

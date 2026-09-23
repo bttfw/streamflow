@@ -134,9 +134,17 @@ def test_discovery_shares_one_dead_snapshot_with_matching_workers():
         result = manager._discover_and_assign_streams_impl(force=True, skip_check_trigger=True)
         assert result.get("success") is not False
         assert result["assignment_count"] == {}
+        assert "allowed_channel_ids" not in manager.regex_matcher.match_stream_to_channels.call_args.kwargs
         manager.dead_streams_tracker.get_dead_stream_reasons.assert_called_once_with()
         manager.dead_streams_tracker.is_dead.assert_not_called()
         assign.assert_not_called()
+
+        manager.regex_matcher.match_stream_to_channels.reset_mock()
+        single_result = manager._discover_and_assign_streams_impl(
+            force=True, skip_check_trigger=True, channel_id=10,
+        )
+        assert single_result.get("success") is not False
+        assert manager.regex_matcher.match_stream_to_channels.call_args.kwargs["allowed_channel_ids"] == frozenset(("10",))
 
         manager.dead_streams_tracker.get_dead_stream_reasons.side_effect = RuntimeError(
             "injected database read failure"
@@ -219,3 +227,125 @@ def test_group_pattern_lookup_uses_in_memory_cache(monkeypatch):
         assert "5001" in matches
 
     assert load_group_calls["count"] == 1
+
+
+def test_single_channel_scope_preserves_regex_tvg_group_and_provider_matches():
+    matcher = RegexChannelMatcher.__new__(RegexChannelMatcher)
+    matcher.lock = threading.RLock()
+    matcher.channel_patterns = {
+        "patterns": {
+            "10": {
+                "name": "Target",
+                "enabled": True,
+                "match_by_tvg_id": False,
+                "regex_patterns": [{"pattern": "^Target", "m3u_accounts": [2]}],
+            },
+            "20": {
+                "name": "Other",
+                "enabled": True,
+                "match_by_tvg_id": True,
+                "regex_patterns": [{"pattern": "^Other", "m3u_accounts": None}],
+            },
+        },
+        "global_settings": {"case_sensitive": True},
+    }
+    matcher.group_patterns = {
+        "7": {
+            "name": "Group",
+            "enabled": True,
+            "match_by_tvg_id": False,
+            "regex_patterns": [{"pattern": "^Group", "m3u_accounts": None}],
+        }
+    }
+    tvg_ids = {"10": "target.id", "20": "other.id", "30": "group.id"}
+    priorities = {"10": ["regex", "tvg"], "20": ["tvg", "regex"], "30": ["regex", "tvg"]}
+    groups = {"30": 7}
+
+    for stream_name, account, tvg_id in (
+        ("Target HD", 2, None),
+        ("Target HD", 1, None),
+        ("Other HD", 2, "other.id"),
+        ("Unrelated", 2, "other.id"),
+        ("Group HD", 2, None),
+        ("Unrelated", 2, None),
+    ):
+        all_matches = matcher.match_stream_to_channels(
+            stream_name, account, tvg_id, tvg_ids, priorities, groups,
+        )
+        for target in ("10", "20", "30"):
+            scoped_matches = matcher.match_stream_to_channels(
+                stream_name, account, tvg_id, tvg_ids, priorities, groups,
+                allowed_channel_ids=frozenset((target,)),
+            )
+            assert scoped_matches == ([target] if target in all_matches else [])
+
+
+def test_single_channel_scope_avoids_unrelated_channel_evaluations():
+    matcher = RegexChannelMatcher.__new__(RegexChannelMatcher)
+    matcher.lock = threading.RLock()
+    matcher.channel_patterns = {
+        "patterns": {
+            str(i): {
+                "name": f"Channel {i}",
+                "enabled": True,
+                "match_by_tvg_id": False,
+                "regex_patterns": [{"pattern": f"^Channel {i}$", "m3u_accounts": None}],
+            }
+            for i in range(1, 101)
+        },
+        "global_settings": {"case_sensitive": True},
+    }
+    matcher.group_patterns = {}
+    matcher._get_effective_channel_config = Mock(wraps=matcher._get_effective_channel_config)
+
+    for i in range(40):
+        matcher.match_stream_to_channels(f"Stream {i}", 1)
+    assert matcher._get_effective_channel_config.call_count == 4000
+
+    matcher._get_effective_channel_config.reset_mock()
+    for i in range(40):
+        matcher.match_stream_to_channels(
+            f"Stream {i}", 1, allowed_channel_ids=frozenset(("10",)),
+        )
+    assert matcher._get_effective_channel_config.call_count == 40
+
+
+def test_single_channel_batch_scope_preserves_dead_stream_revival():
+    manager = AutomatedStreamManager.__new__(AutomatedStreamManager)
+    manager.regex_matcher = RegexChannelMatcher.__new__(RegexChannelMatcher)
+    manager.regex_matcher.lock = threading.RLock()
+    manager.regex_matcher.channel_patterns = {
+        "patterns": {
+            "10": {
+                "name": "Target",
+                "enabled": True,
+                "match_by_tvg_id": False,
+                "regex_patterns": [{"pattern": "Target", "m3u_accounts": [2]}],
+            },
+            "20": {
+                "name": "Other",
+                "enabled": True,
+                "match_by_tvg_id": False,
+                "regex_patterns": [{"pattern": "Other", "m3u_accounts": None}],
+            },
+        },
+        "global_settings": {"case_sensitive": True},
+    }
+    manager.regex_matcher.group_patterns = {}
+    streams = [
+        {"id": 1, "name": "Target", "m3u_account": 2, "url": "http://dead.test/1"},
+        {"id": 2, "name": "Target", "m3u_account": 2, "url": "http://live.test/2"},
+        {"id": 3, "name": "Other", "m3u_account": 2, "url": "http://live.test/3"},
+        {"id": 4, "name": "Target", "m3u_account": 1, "url": "http://live.test/4"},
+    ]
+    for allow_revive, expected in ((False, [2]), (True, [1, 2])):
+        full, _ = manager._match_streams_batch(
+            streams, {"10": set()}, True, {"10": allow_revive},
+            dead_stream_urls=frozenset(("http://dead.test/1",)),
+        )
+        scoped, _ = manager._match_streams_batch(
+            streams, {"10": set()}, True, {"10": allow_revive},
+            dead_stream_urls=frozenset(("http://dead.test/1",)),
+            allowed_channel_ids=frozenset(("10",)),
+        )
+        assert scoped["10"] == full["10"] == expected
