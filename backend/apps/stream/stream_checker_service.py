@@ -2266,6 +2266,9 @@ class StreamCheckerService:
         ] = None,
     ) -> List[Dict[str, Any]]:
         """Recheck missing bitrates one at a time after initial channel analysis."""
+        if not self._is_bitrate_recheck_enabled():
+            return results
+
         result_by_id = {
             str(result.get("stream_id")): result
             for result in results
@@ -2334,6 +2337,25 @@ class StreamCheckerService:
                 on_complete(initial, outcome, index, total)
 
         return results
+
+    def _is_bitrate_recheck_enabled(self) -> bool:
+        """Return whether deferred missing-bitrate rechecks are enabled."""
+        config = getattr(self, "config", None)
+        if config is None:
+            return True
+
+        getter = getattr(config, "get", None)
+        if callable(getter):
+            try:
+                return bool(getter("stream_analysis.bitrate_recheck_enabled", True))
+            except Exception:
+                return True
+
+        if isinstance(config, dict):
+            stream_analysis = config.get("stream_analysis")
+            if isinstance(stream_analysis, dict):
+                return bool(stream_analysis.get("bitrate_recheck_enabled", True))
+        return True
 
     @staticmethod
     def _initialize_provider_probe_account_inventory(
@@ -4691,7 +4713,7 @@ class StreamCheckerService:
                         freeze_check_noise_threshold=analysis_params.get('freeze_check_noise_threshold', 0.001),
                         freeze_check_ratio_threshold=analysis_params.get('freeze_check_ratio_threshold', 0.80),
                         hardware_acceleration=analysis_params.get('hardware_acceleration'),
-                        defer_missing_bitrate_retry=True,
+                        defer_missing_bitrate_retry=self._is_bitrate_recheck_enabled(),
                     )
                 finally:
                     _heartbeat_stop.set()
@@ -6257,7 +6279,7 @@ class StreamCheckerService:
                     freeze_check_noise_threshold=analysis_params.get('freeze_check_noise_threshold', 0.001),
                     freeze_check_ratio_threshold=analysis_params.get('freeze_check_ratio_threshold', 0.80),
                     hardware_acceleration=analysis_params.get('hardware_acceleration'),
-                    defer_missing_bitrate_retry=True,
+                    defer_missing_bitrate_retry=self._is_bitrate_recheck_enabled(),
                 )
 
                 def recheck_sequential_bitrate(_stream, _initial):
@@ -10594,7 +10616,7 @@ class StreamCheckerService:
                 freeze_check_noise_threshold=analysis_params.get('freeze_check_noise_threshold', 0.001),
                 freeze_check_ratio_threshold=analysis_params.get('freeze_check_ratio_threshold', 0.80),
                 hardware_acceleration=analysis_params.get('hardware_acceleration'),
-                defer_missing_bitrate_retry=True,
+                defer_missing_bitrate_retry=self._is_bitrate_recheck_enabled(),
             )
 
             if self.abort_current_check.is_set():
