@@ -491,6 +491,63 @@ class TestSingleChannelM3uUpdateFlagDisabled(unittest.TestCase):
     @patch('stream_checker_service.get_automation_config_manager')
     @patch('apps.stream.stream_session_manager.get_session_manager')
     @patch('stream_checker_service.fetch_channel_streams')
+    def test_matching_failure_stops_single_channel_before_quality_check(
+        self, mock_fetch, mock_session_mgr, mock_acm_factory,
+        mock_config_class, mock_get_udi,
+    ):
+        """A failed matching batch or exception must not become a successful check."""
+        from apps.stream.stream_checker_service import StreamCheckerService
+
+        profile = _make_profile(
+            m3u_update_enabled=False, matching_enabled=True, checking_enabled=True,
+        )
+        channel_id = 44
+        streams = [{'id': 3, 'url': 'http://x/3', 'm3u_account': 5, 'stream_stats': {}}]
+        mock_config_class.return_value = _make_mock_config()
+        mock_session_mgr.return_value.get_channels_in_active_sessions.return_value = []
+        mock_acm_factory.return_value = _make_mock_acm(profile)
+        mock_fetch.return_value = streams
+
+        failures = (
+            ({'success': False, 'error': 'Stream matching batch failed: injected worker error'},
+             'Stream matching batch failed: injected worker error', False),
+            (RuntimeError('injected worker error'), 'stream_matching_failed', False),
+            ({'success': False, 'aborted': True}, 'aborted', True),
+        )
+        for outcome, expected_error, expected_aborted in failures:
+            with self.subTest(outcome=outcome):
+                mock_udi = _make_mock_udi(channel_id, 'Test Channel', streams)
+                mock_get_udi.return_value = mock_udi
+                service = StreamCheckerService()
+                service._require_quality_check_connectivity = Mock(return_value=None)
+                service._check_channel = Mock()
+                service.dead_streams_tracker = Mock()
+                service.dead_streams_tracker.get_dead_streams_for_channel.return_value = {}
+                service.dead_streams_tracker.cleanup_removed_streams.return_value = 0
+                service.progress.clear = Mock(wraps=service.progress.clear)
+
+                with patch('automated_stream_manager.AutomatedStreamManager') as mock_asm:
+                    manager = mock_asm.return_value
+                    manager.validate_and_remove_non_matching_streams.return_value = {}
+                    if isinstance(outcome, Exception):
+                        manager.discover_and_assign_streams.side_effect = outcome
+                    else:
+                        manager.discover_and_assign_streams.return_value = outcome
+                    result = service.check_single_channel(channel_id=channel_id)
+
+                self.assertIs(result['success'], False)
+                self.assertEqual(result['error'], expected_error)
+                self.assertEqual(result.get('aborted', False), expected_aborted)
+                service._check_channel.assert_not_called()
+                mock_udi.refresh_channel_by_id.assert_not_called()
+                service.progress.clear.assert_called()
+                mock_udi.clear_automation_busy.assert_called_once()
+
+    @patch('stream_checker_service.get_udi_manager')
+    @patch('stream_checker_service.StreamCheckConfig')
+    @patch('stream_checker_service.get_automation_config_manager')
+    @patch('apps.stream.stream_session_manager.get_session_manager')
+    @patch('stream_checker_service.fetch_channel_streams')
     def test_all_flags_false_skips_both_refresh_and_udi_sync(
         self, mock_fetch, mock_session_mgr, mock_acm_factory,
         mock_config_class, mock_get_udi,

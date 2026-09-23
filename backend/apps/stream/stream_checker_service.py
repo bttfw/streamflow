@@ -9799,12 +9799,43 @@ class StreamCheckerService:
                         channel_id=channel_id,
                         allow_dead_streams=_step5_allow_dead_streams,
                     )
+                    if isinstance(assignments, dict) and (
+                        assignments.get('success') is False or assignments.get('aborted')
+                    ):
+                        clear_operation_progress()
+                        if assignments.get('aborted'):
+                            logger.info("Stream matching aborted for channel %s", channel_name)
+                            return {
+                                'success': False,
+                                'error': 'aborted',
+                                'aborted': True,
+                                'channel_id': channel_id,
+                                'channel_name': channel_name,
+                            }
+                        logger.error(
+                            "Stream matching failed for channel %s: %s",
+                            channel_name,
+                            assignments.get('error'),
+                        )
+                        return {
+                            'success': False,
+                            'error': assignments.get('error') or 'stream_matching_failed',
+                            'channel_id': channel_id,
+                            'channel_name': channel_name,
+                        }
                     if assignments:
                         logger.info(f"✓ Stream matching completed")
                     else:
                         logger.info("✓ No new stream assignments")
-                except Exception as e:
-                    logger.error(f"✗ Failed to match streams: {e}")
+                except Exception:
+                    logger.error("Failed to match streams for channel %s", channel_name, exc_info=True)
+                    clear_operation_progress()
+                    return {
+                        'success': False,
+                        'error': 'stream_matching_failed',
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                    }
             else:
                 logger.info(f"Step 5/6: Skipping stream matching (matching is disabled for this channel)")
                 update_single_channel_progress(
