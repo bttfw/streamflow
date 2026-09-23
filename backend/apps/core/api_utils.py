@@ -638,6 +638,18 @@ def filter_dead_streams(stream_ids: List[int], stream_id_to_url: Optional[Dict[i
     except Exception as e:
         logger.warning(f"Could not load dead streams tracker in filter_dead_streams: {e}")
         return stream_ids, 0
+
+    # The previous per-stream calls performed one SQL query for each URL; the
+    # offline branch even reloaded the entire dead-stream table each time.
+    # Keep the snapshot local to this write so changes made by subsequent
+    # checks/revival operations are visible to the next call.
+    try:
+        dead_reasons = tracker.get_dead_stream_reasons(
+            {stream_id_to_url.get(sid) for sid in stream_ids if stream_id_to_url.get(sid)}
+        )
+    except Exception as e:
+        logger.warning(f"Could not snapshot dead streams for channel write: {e}")
+        dead_reasons = None
     
     filtered_stream_ids = []
     count_filtered = 0
@@ -649,12 +661,12 @@ def filter_dead_streams(stream_ids: List[int], stream_id_to_url: Optional[Dict[i
             filtered_stream_ids.append(sid)
             continue
             
-        is_dead = False
-        if only_offline:
-            # Only filter if truly offline
+        if dead_reasons is not None:
+            is_dead = dead_reasons.get(url) == 'offline' if only_offline else url in dead_reasons
+        elif only_offline:
+            # Preserve the former behavior if the snapshot query failed.
             is_dead = tracker.is_offline(url)
         else:
-            # Filter if dead for any reason
             is_dead = tracker.is_dead(url)
             
         if is_dead:
