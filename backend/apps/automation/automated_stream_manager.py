@@ -5606,6 +5606,13 @@ class AutomatedStreamManager:
              
         return False
 
+    def _is_period_due_for_cycle(self, period_id: str, period_info: dict, due_cache: Dict[str, bool]) -> bool:
+        """Evaluate each period once during channel discovery in one scheduler cycle."""
+        key = str(period_id)
+        if key not in due_cache:
+            due_cache[key] = self._is_period_due(period_id, period_info)
+        return due_cache[key]
+
     def _refresh_udi_cache_for_automation_cycle(self) -> bool:
         """Refresh all UDI entities after an automation cycle completes.
 
@@ -5844,10 +5851,16 @@ class AutomatedStreamManager:
         
         logger.debug("Starting automation cycle...")
         automation_busy_guard = None
+        run_snapshot_active = False
+        previous_run_snapshot = None
 
         try:
             automation_busy_guard = get_udi_manager()
             automation_busy_guard.set_automation_busy()
+            begin_run_snapshot = getattr(automation_config, 'begin_run_snapshot', None)
+            if callable(begin_run_snapshot):
+                previous_run_snapshot = begin_run_snapshot()
+                run_snapshot_active = True
             if self._abort_run_if_manual_stop_requested():
                 return
 
@@ -5867,6 +5880,7 @@ class AutomatedStreamManager:
             active_periods = {} # {(period_id, period_name): {profile_id, profile_name, channels: []}}
             active_profile_ids = set()
             configured_period_channels: Dict[str, set] = {}
+            period_due_cache: Dict[str, bool] = {}
             
             for channel in channels:
                 channel_id = channel.get('id')
@@ -5885,7 +5899,7 @@ class AutomatedStreamManager:
                             continue
                             
                         # Check if the period is actually due
-                        if not forced and not forced_period_id and not self._is_period_due(p_id, period_info):
+                        if not forced and not forced_period_id and not self._is_period_due_for_cycle(p_id, period_info, period_due_cache):
                             continue
 
                         scheduler_retry = (
@@ -7217,8 +7231,12 @@ class AutomatedStreamManager:
         finally:
             self._m3u_accounts_cache = None
             try:
-                if automation_busy_guard is not None:
-                    automation_busy_guard.clear_automation_busy()
+                try:
+                    if run_snapshot_active:
+                        automation_config.end_run_snapshot(previous_run_snapshot)
+                finally:
+                    if automation_busy_guard is not None:
+                        automation_busy_guard.clear_automation_busy()
             finally:
                 self._manual_stop_requested.clear()
                 if automation_checker_reserved:
