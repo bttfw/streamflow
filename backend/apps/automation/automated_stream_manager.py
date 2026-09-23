@@ -4150,7 +4150,7 @@ class AutomatedStreamManager:
         """
         if not self._lock.acquire(blocking=False):
             logger.warning("Stream discovery already active - skipping concurrent request")
-            return {}
+            return {"success": False, "error": "Stream discovery is already active"}
         
         try:
             return self._discover_and_assign_streams_impl(force, skip_check_trigger, forced_period_id, skip_changelog, channel_id, allow_dead_streams=allow_dead_streams)
@@ -4629,6 +4629,7 @@ class AutomatedStreamManager:
             last_log_pct = -1
             
             aborted = False
+            matching_error = None
             future_to_batch = {}
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
             try:
@@ -4672,12 +4673,14 @@ class AutomatedStreamManager:
                              last_log_pct = current_pct
                              
                     except Exception as e:
-                        logger.error(f"Error in stream matching batch: {e}")
+                        matching_error = f"Stream matching batch failed: {e}"
+                        logger.exception(matching_error)
+                        break
             finally:
-                if aborted:
+                if aborted or matching_error:
                     for pending in future_to_batch:
                         pending.cancel()
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    executor.shutdown(wait=not aborted, cancel_futures=True)
                 else:
                     executor.shutdown(wait=True)
 
@@ -4701,6 +4704,22 @@ class AutomatedStreamManager:
                     "success": False,
                     "error": message,
                 }
+
+            if matching_error:
+                self._update_run_progress(
+                    stage_key="stream_matching",
+                    current=completed_count,
+                    total=total_streams,
+                    message=matching_error,
+                )
+                return {
+                    "assignment_count": {},
+                    "assignment_details": [],
+                    "assigned_stream_ids": {},
+                    "channel_visibility_events": channel_visibility_events,
+                    "success": False,
+                    "error": matching_error,
+                }
             
             logger.info(f"✓ Completed processing {total_streams} streams. Found {sum(len(s) for s in assignments.values())} new stream assignments across {len(assignments)} channels")
             
@@ -4719,6 +4738,7 @@ class AutomatedStreamManager:
             # (allow_dead_streams caller override is already reflected in the variable.)
             
             # Assign streams to channels
+            assignment_errors = []
             for channel_id, stream_ids in assignments.items():
                 if stream_ids:
                     try:
@@ -4810,6 +4830,7 @@ class AutomatedStreamManager:
                         
                     except Exception as e:
                         logger.error(f"Failed to assign streams to channel {channel_id}: {e}")
+                        assignment_errors.append(f"channel {channel_id}: {e}")
             
             accepted_assignment_count = {
                 channel_id: count
@@ -4890,6 +4911,14 @@ class AutomatedStreamManager:
                 "assignment_details": detailed_assignments,
                 "assigned_stream_ids": dict(accepted_assigned_stream_ids),
                 "channel_visibility_events": channel_visibility_events,
+                **({
+                    "success": False,
+                    "error": (
+                        f"Stream assignment failed for {len(assignment_errors)} channel(s): "
+                        + "; ".join(assignment_errors[:3])
+                    ),
+                    "partial_writes": bool(accepted_assignment_count),
+                } if assignment_errors else {}),
             }
             
         except Exception as e:
@@ -4935,7 +4964,9 @@ class AutomatedStreamManager:
                 "channels_checked": 0,
                 "streams_removed": 0,
                 "channels_modified": 0,
-                "details": []
+                "details": [],
+                "success": False,
+                "error": "Stream validation is already active",
             }
             
         try:
@@ -4954,7 +4985,12 @@ class AutomatedStreamManager:
             
             if not all_channels:
                 logger.info("No channels found")
-                return False, []
+                return {
+                    "channels_checked": 0,
+                    "streams_removed": 0,
+                    "channels_modified": 0,
+                    "details": [],
+                }
             
             # Filter by profile if one is selected
             all_channels = self._filter_channels_by_profile(all_channels, "stream validation")
@@ -5088,6 +5124,7 @@ class AutomatedStreamManager:
             completed_count = 0
             
             aborted = False
+            validation_errors = []
             future_to_batch = {}
             executor = concurrent.futures.ThreadPoolExecutor(max_workers=max_workers)
             try:
@@ -5140,13 +5177,23 @@ class AutomatedStreamManager:
                                         logger.info(f"✓ Removed {len(removed_streams)} non-matching stream(s) from {channel_name}")
                                     else:
                                         logger.error(f"Failed to update channel {channel_name} after validation")
+                                        validation_errors.append(
+                                            f"Dispatcharr rejected validation update for channel {channel_id}"
+                                        )
+                                        break
                                         
                                 except Exception as update_err:
                                     logger.error(f"Failed to update channel {channel_id}: {update_err}")
+                                    validation_errors.append(
+                                        f"Validation update failed for channel {channel_id}: {update_err}"
+                                    )
+                                    break
                             else:
                                 if len(removed_streams) > 0:
                                     # Log but don't apply — validate_existing_streams is disabled for this channel
                                     logger.debug(f"Found {len(removed_streams)} non-matching streams in channel {channel_id}, but validate_existing_streams is disabled for its profile")
+                        if validation_errors:
+                            break
                         
                         completed_count += len(future_to_batch[future])
                         # Log less frequently
@@ -5156,14 +5203,15 @@ class AutomatedStreamManager:
                              logger.info(f"  Validation progress: {int(completed_count/len(all_channels)*100)}%")
 
                     except Exception as e:
-                        logger.error(f"Error in channel validation batch: {e}")
-                    if aborted:
+                        logger.exception("Channel validation batch failed: %s", e)
+                        validation_errors.append(f"Channel validation batch failed: {e}")
+                    if aborted or validation_errors:
                         break
             finally:
-                if aborted:
+                if aborted or validation_errors:
                     for pending in future_to_batch:
                         pending.cancel()
-                    executor.shutdown(wait=False, cancel_futures=True)
+                    executor.shutdown(wait=not aborted, cancel_futures=True)
                 else:
                     executor.shutdown(wait=True)
 
@@ -5175,6 +5223,12 @@ class AutomatedStreamManager:
                     "Stream validation aborted after checking "
                     f"{validation_results['channels_checked']} channel(s)"
                 )
+                return validation_results
+
+            if validation_errors:
+                validation_results["success"] = False
+                validation_results["error"] = "; ".join(validation_errors[:3])
+                validation_results["partial_writes"] = bool(validation_results["channels_modified"])
                 return validation_results
             
             logger.info(f"Stream validation completed: Checked {validation_results['channels_checked']} channels, " +
@@ -6416,6 +6470,8 @@ class AutomatedStreamManager:
                             skip_changelog=True,
                         )
                     )
+                    if not isinstance(val_res, dict):
+                        raise RuntimeError("Stream validation returned an invalid result")
                     validation_details = val_res.get("details", [])
                     child_abort_message, child_abort_handled = self._handle_child_stage_abort(
                         val_res,
@@ -6429,8 +6485,11 @@ class AutomatedStreamManager:
                         refresh_success = False
                     elif self._abort_run_if_manual_stop_requested(active_periods=active_periods):
                         return
+                    if val_res.get("success") is False or val_res.get("error"):
+                        raise RuntimeError(val_res.get("error") or "Stream validation failed")
                 except Exception as e:
                     logger.error(f"✗ Failed to validate streams: {e}")
+                    raise
                 if self._abort_run_if_manual_stop_requested(active_periods=active_periods):
                     return
 
@@ -6450,6 +6509,8 @@ class AutomatedStreamManager:
                             skip_changelog=True,
                         )
                     )
+                    if not isinstance(assign_res, dict):
+                        raise RuntimeError("Stream discovery returned an invalid result")
                     assignment_details = assign_res.get("assignment_details", [])
                     assigned_stream_ids = assign_res.get("assigned_stream_ids", {})
                     channel_visibility_events.extend(assign_res.get("channel_visibility_events", []) or [])
@@ -6465,9 +6526,12 @@ class AutomatedStreamManager:
                         refresh_success = False
                     elif self._abort_run_if_manual_stop_requested(active_periods=active_periods):
                         return
+                    if assign_res.get("success") is False or assign_res.get("error"):
+                        raise RuntimeError(assign_res.get("error") or "Stream discovery failed")
                 except Exception as e:
                     logger.error(f"✗ Failed to assign streams: {e}")
                     assigned_stream_ids = {}
+                    raise
 
                 if self._abort_run_if_manual_stop_requested(active_periods=active_periods):
                     return

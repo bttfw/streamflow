@@ -1,6 +1,8 @@
 """StreamFlow-owned Dispatcharr channel visibility automation."""
 
+from copy import deepcopy
 from datetime import datetime, timezone
+import threading
 from typing import Any, Callable, Dict, Optional
 
 from apps.core.logging_config import setup_logging
@@ -42,6 +44,8 @@ def resolve_channel_visibility_config(
 
 class ChannelVisibilityAutomation:
     """Manage only StreamFlow-owned hide/unhide decisions."""
+
+    _state_lock = threading.RLock()
 
     def __init__(
         self,
@@ -152,34 +156,10 @@ class ChannelVisibilityAutomation:
         reason: str,
         details: Optional[Dict[str, Any]] = None,
     ) -> Dict[str, Any]:
-        channel_id = self._channel_id(channel)
-        if channel_id is None:
-            return self._skipped(channel, "missing_channel_id", reason)
+        with self._state_lock:
+            return self._hide_channel_locked(channel, reason=reason, details=details)
 
-        state = self._load_state()
-        state_entry = state.get(str(channel_id))
-        if self._is_hidden(channel):
-            if state_entry:
-                state[str(channel_id)] = self._state_entry(channel, reason, details)
-                self._save_state(state)
-                return self._result(channel, "hidden_already_managed", reason, changed=False, details=details)
-            return self._result(channel, "manual_hidden_preserved", reason, changed=False, details=details)
-
-        patch_result = self._patch_hidden(channel, True)
-        if not patch_result.get("success"):
-            return self._result(
-                channel,
-                "patch_failed",
-                reason,
-                changed=False,
-                details={**(details or {}), "error": patch_result.get("error")},
-            )
-
-        state[str(channel_id)] = self._state_entry(channel, reason, details)
-        self._save_state(state)
-        return self._result(channel, "hidden", reason, changed=True, details=details)
-
-    def unhide_channel(
+    def _hide_channel_locked(
         self,
         channel: Dict[str, Any],
         *,
@@ -190,7 +170,71 @@ class ChannelVisibilityAutomation:
         if channel_id is None:
             return self._skipped(channel, "missing_channel_id", reason)
 
-        state = self._load_state()
+        try:
+            state = self._load_state()
+        except RuntimeError as exc:
+            return self._state_failure(channel, reason, details, exc)
+        state_entry = state.get(str(channel_id))
+        if self._is_hidden(channel):
+            if state_entry:
+                state[str(channel_id)] = self._state_entry(channel, reason, details)
+                try:
+                    self._save_state(state)
+                except RuntimeError as exc:
+                    return self._state_failure(channel, reason, details, exc)
+                return self._result(channel, "hidden_already_managed", reason, changed=False, details=details)
+            return self._result(channel, "manual_hidden_preserved", reason, changed=False, details=details)
+
+        # Persist ownership before changing Dispatcharr. A failed database write
+        # must never leave a hidden channel that StreamFlow cannot later unhide.
+        state[str(channel_id)] = self._state_entry(channel, reason, details)
+        try:
+            self._save_state(state)
+        except RuntimeError as exc:
+            return self._state_failure(channel, reason, details, exc)
+
+        patch_result = self._patch_hidden(channel, True)
+        if not patch_result.get("success"):
+            state.pop(str(channel_id), None)
+            try:
+                self._save_state(state)
+            except RuntimeError as exc:
+                logger.error("Could not remove pending visibility ownership for channel %s: %s", channel_id, exc)
+            return self._result(
+                channel,
+                "patch_failed",
+                reason,
+                changed=False,
+                details={**(details or {}), "error": patch_result.get("error")},
+            )
+
+        return self._result(channel, "hidden", reason, changed=True, details=details)
+
+    def unhide_channel(
+        self,
+        channel: Dict[str, Any],
+        *,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        with self._state_lock:
+            return self._unhide_channel_locked(channel, reason=reason, details=details)
+
+    def _unhide_channel_locked(
+        self,
+        channel: Dict[str, Any],
+        *,
+        reason: str,
+        details: Optional[Dict[str, Any]] = None,
+    ) -> Dict[str, Any]:
+        channel_id = self._channel_id(channel)
+        if channel_id is None:
+            return self._skipped(channel, "missing_channel_id", reason)
+
+        try:
+            state = self._load_state()
+        except RuntimeError as exc:
+            return self._state_failure(channel, reason, details, exc)
         state_entry = state.get(str(channel_id))
         if not state_entry:
             if self._is_hidden(channel):
@@ -199,7 +243,10 @@ class ChannelVisibilityAutomation:
 
         if not self._is_hidden(channel):
             state.pop(str(channel_id), None)
-            self._save_state(state)
+            try:
+                self._save_state(state)
+            except RuntimeError as exc:
+                return self._state_failure(channel, reason, details, exc)
             return self._result(channel, "state_cleared_visible", reason, changed=False, details=details)
 
         patch_result = self._patch_hidden(channel, False)
@@ -213,16 +260,21 @@ class ChannelVisibilityAutomation:
             )
 
         state.pop(str(channel_id), None)
-        self._save_state(state)
+        try:
+            self._save_state(state)
+        except RuntimeError as exc:
+            return self._state_failure(channel, reason, details, exc)
         return self._result(channel, "unhidden", reason, changed=True, details=details)
 
     def _load_state(self) -> Dict[str, Dict[str, Any]]:
         try:
             state = self.db_provider().get_system_setting(STATE_KEY, {}) or {}
-            return state if isinstance(state, dict) else {}
+            if not isinstance(state, dict):
+                raise ValueError("visibility state is not a mapping")
+            return deepcopy(state)
         except Exception as exc:
             logger.warning("Could not load StreamFlow channel visibility state: %s", exc)
-            return {}
+            raise RuntimeError("Could not load StreamFlow channel visibility state") from exc
 
     def _state_entry_for_channel(self, channel: Dict[str, Any]) -> Optional[Dict[str, Any]]:
         channel_id = self._channel_id(channel)
@@ -231,7 +283,22 @@ class ChannelVisibilityAutomation:
         return self._load_state().get(str(channel_id))
 
     def _save_state(self, state: Dict[str, Dict[str, Any]]) -> None:
-        self.db_provider().set_system_setting(STATE_KEY, state)
+        try:
+            saved = self.db_provider().set_system_setting(STATE_KEY, state)
+        except Exception as exc:
+            raise RuntimeError("Could not save StreamFlow channel visibility state") from exc
+        if saved is False:
+            raise RuntimeError("Could not save StreamFlow channel visibility state")
+
+    def _state_failure(
+        self, channel: Dict[str, Any], reason: str,
+        details: Optional[Dict[str, Any]], error: Exception,
+    ) -> Dict[str, Any]:
+        logger.error("Channel visibility state failed for channel %s: %s", self._channel_id(channel), error)
+        return self._result(
+            channel, "state_failed", reason, changed=False,
+            details={**(details or {}), "error": str(error)},
+        )
 
     def _state_entry(
         self,

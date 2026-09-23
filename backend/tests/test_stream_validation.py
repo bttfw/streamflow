@@ -26,6 +26,9 @@ class TestStreamValidation(unittest.TestCase):
     
     def setUp(self):
         """Set up test fixtures."""
+        authoritative_patch = patch('api_utils.fetch_data_from_url', return_value=[1, 2, 3])
+        self.authoritative_fetch = authoritative_patch.start()
+        self.addCleanup(authoritative_patch.stop)
         # Mock valid streams in Dispatcharr
         self.valid_streams = [
             {'id': 1, 'name': 'Stream 1', 'url': 'http://example.com/stream1.m3u8'},
@@ -224,6 +227,60 @@ class TestStreamValidation(unittest.TestCase):
         self.assertEqual(result, 1)
         
         # Verify that patch was called
+        mock_patch.assert_called_once()
+
+    @patch('api_utils.patch_request')
+    @patch('api_utils.get_udi_manager')
+    def test_update_preserves_valid_ids_missing_from_udi_cache(self, mock_get_udi, mock_patch):
+        from apps.core.api_utils import update_channel_streams
+
+        mock_get_udi.return_value.get_valid_stream_ids.return_value = {1}
+        self.authoritative_fetch.return_value = [1, 4]
+        mock_patch.return_value = Mock(status_code=204)
+
+        self.assertTrue(update_channel_streams(10, [1, 4], allow_dead_streams=True))
+        self.assertEqual(mock_patch.call_args.args[1]['streams'], [1, 4])
+        self.authoritative_fetch.assert_called_once()
+
+    @patch('api_utils.patch_request')
+    @patch('api_utils.get_udi_manager')
+    def test_update_refuses_write_when_missing_ids_cannot_be_verified(self, mock_get_udi, mock_patch):
+        from apps.core.api_utils import update_channel_streams
+
+        mock_get_udi.return_value.get_valid_stream_ids.return_value = {1}
+        self.authoritative_fetch.return_value = None
+
+        self.assertFalse(update_channel_streams(10, [1, 4], allow_dead_streams=True))
+        mock_patch.assert_not_called()
+
+    @patch('api_utils.patch_request')
+    @patch('api_utils.get_udi_manager')
+    def test_add_preserves_authoritatively_valid_uncached_current_id(self, mock_get_udi, mock_patch):
+        from apps.core.api_utils import add_streams_to_channel
+
+        udi = mock_get_udi.return_value
+        udi.get_valid_stream_ids.return_value = {1, 2}
+        udi.get_channel_by_id.return_value = {'id': 10, 'streams': [1, 4]}
+        udi.get_channel_streams.return_value = [{'id': 1}]
+        self.authoritative_fetch.return_value = [1, 2, 4]
+        mock_patch.return_value = Mock(status_code=204)
+
+        self.assertEqual(add_streams_to_channel(10, [2], allow_dead_streams=True), 1)
+        self.assertEqual(mock_patch.call_args.args[1]['streams'], [1, 4, 2])
+
+    @patch('api_utils.patch_request')
+    @patch('api_utils.get_udi_manager')
+    def test_add_reports_rejected_dispatcharr_patch(self, mock_get_udi, mock_patch):
+        from apps.core.api_utils import add_streams_to_channel
+
+        udi = mock_get_udi.return_value
+        udi.get_valid_stream_ids.return_value = {1, 2}
+        udi.get_channel_by_id.return_value = {'id': 10, 'streams': [1]}
+        udi.get_channel_streams.return_value = [{'id': 1}]
+        mock_patch.return_value = Mock(status_code=503)
+
+        with self.assertRaisesRegex(RuntimeError, 'Dispatcharr rejected stream assignment'):
+            add_streams_to_channel(10, [2], allow_dead_streams=True)
         mock_patch.assert_called_once()
 
 

@@ -272,6 +272,39 @@ def _dedupe_stream_ids(stream_ids: List[int]) -> List[int]:
     return deduped
 
 
+def _verify_missing_stream_ids(
+    requested_ids: List[int], cached_valid_ids: set, channel_id: int
+) -> Optional[set]:
+    """Verify cache misses against Dispatcharr before a channel write.
+
+    A stale UDI stream cache must never silently turn an assignment into a
+    removal. The IDs endpoint is consulted only when a requested ID is absent
+    from the cache, so normal writes do not add an extra API request.
+    """
+    cached_valid_ids = set(cached_valid_ids)
+    if all(stream_id in cached_valid_ids for stream_id in requested_ids):
+        return cached_valid_ids
+
+    url = f"{_get_base_url()}/api/channels/streams/ids/"
+    try:
+        authoritative_ids = fetch_data_from_url(url)
+    except Exception as exc:
+        logger.error("Could not verify stream IDs for channel %s: %s", channel_id, exc)
+        return None
+    if not isinstance(authoritative_ids, list) or not authoritative_ids:
+        logger.error(
+            "Cannot verify missing stream IDs for channel %s; refusing channel write",
+            channel_id,
+        )
+        return None
+    try:
+        verified_ids = {int(stream_id) for stream_id in authoritative_ids}
+    except (TypeError, ValueError):
+        logger.error("Invalid Dispatcharr stream ID response for channel %s", channel_id)
+        return None
+    return verified_ids
+
+
 def update_channel_streams(
     channel_id: int, stream_ids: List[int], valid_stream_ids: Optional[set] = None,
     allow_dead_streams: bool = False,
@@ -303,6 +336,11 @@ def update_channel_streams(
     # Filter out stream IDs that no longer exist in Dispatcharr
     if valid_stream_ids is None:
         valid_stream_ids = get_valid_stream_ids()
+
+    if stream_ids:
+        valid_stream_ids = _verify_missing_stream_ids(stream_ids, valid_stream_ids, channel_id)
+        if valid_stream_ids is None:
+            return False
     
     original_count = len(stream_ids)
     valid_filtered_stream_ids = [sid for sid in stream_ids if sid in valid_stream_ids]
@@ -722,6 +760,14 @@ def add_streams_to_channel(
     # Filter out stream IDs that no longer exist in Dispatcharr
     if valid_stream_ids is None:
         valid_stream_ids = get_valid_stream_ids()
+    if stream_ids or current_stream_ids:
+        valid_stream_ids = _verify_missing_stream_ids(
+            current_stream_ids + stream_ids, valid_stream_ids, channel_id
+        )
+        if valid_stream_ids is None:
+            raise RuntimeError(
+                f"Could not verify stream IDs for channel {channel_id} before assignment"
+            )
     
     current_stream_id_set = set(current_stream_ids)
     valid_new_stream_ids = _dedupe_stream_ids([
@@ -748,7 +794,8 @@ def add_streams_to_channel(
     
     if valid_new_stream_ids:
         updated_streams = _dedupe_stream_ids(current_stream_ids + valid_new_stream_ids)
-        update_channel_streams(channel_id, updated_streams, valid_stream_ids, allow_dead_streams)
+        if not update_channel_streams(channel_id, updated_streams, valid_stream_ids, allow_dead_streams):
+            raise RuntimeError(f"Dispatcharr rejected stream assignment for channel {channel_id}")
         logger.info(
             f"Added {len(valid_new_stream_ids)} new streams to channel "
             f"{channel_id}"

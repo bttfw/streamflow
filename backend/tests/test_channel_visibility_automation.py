@@ -70,6 +70,65 @@ def test_no_regex_hide_marks_channel_and_records_streamflow_state():
     assert udi.updated[0][1]["hidden_from_output"] is True
 
 
+def test_hide_persists_ownership_before_patch_then_recovered_channel_unhides():
+    db = FakeDb()
+
+    def patch_with_ownership(_url, payload):
+        if payload["hidden_from_output"]:
+            assert db.settings[STATE_KEY]["10"]["hidden_by"] == "streamflow"
+        return FakeResponse()
+
+    patch_request = Mock(side_effect=patch_with_ownership)
+    service = make_service(db, patch_request=patch_request)
+    channel = {"id": 10, "name": "Recovered", "hidden_from_output": False}
+
+    hidden = service.hide_channel(channel, reason="all_failed")
+    recovered = service.handle_quality_result(
+        {**channel, "hidden_from_output": True},
+        good_streams_count=1,
+        dead_streams_count=0,
+        config={"enabled": True, "unhide_on_recovered": True},
+    )
+
+    assert hidden["action"] == "hidden"
+    assert recovered["action"] == "unhidden"
+    assert "10" not in db.settings[STATE_KEY]
+    assert [call.args[1]["hidden_from_output"] for call in patch_request.call_args_list] == [True, False]
+
+
+def test_failed_ownership_save_does_not_hide_channel():
+    class FailingDb(FakeDb):
+        def set_system_setting(self, key, value):
+            return False
+
+    db = FailingDb()
+    patch_request = Mock(return_value=FakeResponse())
+    service = make_service(db, patch_request=patch_request)
+
+    result = service.hide_channel(
+        {"id": 10, "name": "Keep Visible", "hidden_from_output": False},
+        reason="all_failed",
+    )
+
+    assert result["action"] == "state_failed"
+    assert db.settings[STATE_KEY] == {}
+    patch_request.assert_not_called()
+
+
+def test_failed_hide_patch_removes_ownership_marker():
+    db = FakeDb()
+    patch_request = Mock(return_value=Mock(status_code=503))
+    service = make_service(db, patch_request=patch_request)
+
+    result = service.hide_channel(
+        {"id": 10, "name": "Keep Visible", "hidden_from_output": False},
+        reason="all_failed",
+    )
+
+    assert result["action"] == "patch_failed"
+    assert db.settings[STATE_KEY] == {}
+
+
 def test_manual_hidden_channel_is_not_claimed_by_no_regex_hide():
     db = FakeDb()
     patch = Mock(return_value=FakeResponse())

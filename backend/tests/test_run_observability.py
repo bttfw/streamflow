@@ -1109,6 +1109,131 @@ class AutomationRunStatusTests(unittest.TestCase):
         self.assertEqual(result["assignment_count"], {})
         self.assertTrue(manager._manual_stop_requested.is_set())
 
+    def test_stream_matching_worker_error_fails_before_any_assignment(self):
+        manager = self._manager()
+        manager.config = {
+            "enabled_features": {"auto_stream_discovery": True},
+            "enabled_m3u_accounts": [],
+        }
+        manager._m3u_accounts_cache = [{"id": 1, "name": "Provider", "is_active": True}]
+        manager.regex_matcher = Mock()
+        manager.regex_matcher.has_regex_patterns.return_value = True
+        manager.regex_matcher.get_match_by_tvg_id.return_value = False
+        manager._filter_channels_by_profile = Mock(side_effect=lambda channels, _reason: channels)
+        manager._record_channel_visibility_events = Mock()
+        manager._is_dead_stream_removal_enabled = Mock(return_value=False)
+        manager._update_run_progress = Mock()
+        manager._get_channel_visibility_config = Mock(return_value={})
+        manager._match_streams_batch = Mock(side_effect=RuntimeError("injected worker failure"))
+
+        streams = [{"id": i, "name": f"Stream {i}", "m3u_account": 1} for i in range(200)]
+        channels = [{"id": 10, "name": "Channel 10"}]
+        automation_config = Mock()
+        automation_config.get_effective_configuration.return_value = {
+            "profile": {
+                "stream_matching": {"enabled": True, "match_priority_order": ["regex"]},
+                "stream_checking": {"enabled": False},
+            }
+        }
+        udi = Mock()
+        udi.get_channel_streams.return_value = []
+
+        with patch("apps.automation.automated_stream_manager.get_streams", return_value=streams), \
+             patch("apps.automation.automated_stream_manager.get_channels", return_value=channels), \
+             patch("apps.automation.automated_stream_manager.get_udi_manager", return_value=udi), \
+             patch("apps.automation.automated_stream_manager.get_automation_config_manager", return_value=automation_config), \
+             patch("apps.automation.automated_stream_manager.assign_streams_to_channel") as assign:
+            result = manager._discover_and_assign_streams_impl(force=True, skip_check_trigger=True)
+
+        self.assertFalse(result["success"])
+        self.assertIn("injected worker failure", result["error"])
+        self.assertEqual(result["assignment_count"], {})
+        assign.assert_not_called()
+
+    def test_stream_validation_rejected_patch_returns_failure_marker(self):
+        manager = self._manager()
+        manager.config = {"enabled_features": {"changelog_tracking": False}}
+        manager._filter_channels_by_profile = Mock(side_effect=lambda channels, _reason: channels)
+        manager._is_dead_stream_removal_enabled = Mock(return_value=False)
+        manager._validate_channels_batch = Mock(return_value={
+            "channels_checked": 1,
+            "details": [{
+                "channel_id": 10,
+                "channel_name": "Channel 10",
+                "kept_ids": [1],
+                "removed_streams": [{"id": 2}],
+                "validate_enabled": True,
+            }],
+        })
+        udi = Mock()
+        udi.get_channels.return_value = [{"id": 10, "name": "Channel 10"}]
+        udi.get_streams.return_value = [{"id": 1}, {"id": 2}]
+        automation_config = Mock()
+        automation_config.get_effective_configuration.return_value = {
+            "profile": {"stream_matching": {
+                "enabled": True, "validate_existing_streams": True,
+            }}
+        }
+        session_manager = Mock()
+        session_manager.get_channels_in_active_sessions.return_value = []
+
+        with patch("apps.automation.automated_stream_manager.get_udi_manager", return_value=udi), \
+             patch("apps.automation.automation_config_manager.get_automation_config_manager", return_value=automation_config), \
+             patch("apps.stream.stream_session_manager.get_session_manager", return_value=session_manager), \
+             patch("apps.automation.automated_stream_manager.update_channel_streams", return_value=False):
+            result = manager._validate_and_remove_non_matching_streams_impl(force=True)
+
+        self.assertFalse(result["success"])
+        self.assertIn("Dispatcharr rejected", result["error"])
+        self.assertEqual(result["channels_modified"], 0)
+
+    def test_stream_assignment_exception_returns_failure_marker(self):
+        manager = self._manager()
+        manager.config = {
+            "enabled_features": {"auto_stream_discovery": True, "changelog_tracking": False},
+            "enabled_m3u_accounts": [],
+        }
+        manager._m3u_accounts_cache = [{"id": 1, "name": "Provider", "is_active": True}]
+        manager.regex_matcher = Mock()
+        manager.regex_matcher.has_regex_patterns.return_value = True
+        manager.regex_matcher.get_match_by_tvg_id.return_value = False
+        manager._filter_channels_by_profile = Mock(side_effect=lambda channels, _reason: channels)
+        manager._record_channel_visibility_events = Mock()
+        manager._is_dead_stream_removal_enabled = Mock(return_value=False)
+        manager._update_run_progress = Mock()
+        manager._get_channel_visibility_config = Mock(return_value={})
+        manager._match_streams_batch = Mock(return_value=(
+            {"10": [1]}, {"10": [{"id": 1, "name": "Stream 1"}]},
+        ))
+        udi = Mock()
+        udi.get_channel_streams.return_value = []
+        automation_config = Mock()
+        automation_config.get_effective_configuration.return_value = {
+            "profile": {
+                "stream_matching": {"enabled": True, "match_priority_order": ["regex"]},
+                "stream_checking": {"enabled": False},
+            }
+        }
+        session_manager = Mock()
+        session_manager.get_channels_in_active_sessions.return_value = []
+
+        with patch("apps.automation.automated_stream_manager.get_streams", return_value=[
+                 {"id": 1, "name": "Stream 1", "m3u_account": 1}
+             ]), \
+             patch("apps.automation.automated_stream_manager.get_channels", return_value=[
+                 {"id": 10, "name": "Channel 10"}
+             ]), \
+             patch("apps.automation.automated_stream_manager.get_udi_manager", return_value=udi), \
+             patch("apps.automation.automated_stream_manager.get_automation_config_manager", return_value=automation_config), \
+             patch("apps.stream.stream_session_manager.get_session_manager", return_value=session_manager), \
+             patch("apps.automation.automated_stream_manager.assign_streams_to_channel",
+                   side_effect=RuntimeError("injected PATCH failure")):
+            result = manager._discover_and_assign_streams_impl(force=True, skip_check_trigger=True)
+
+        self.assertFalse(result["success"])
+        self.assertIn("injected PATCH failure", result["error"])
+        self.assertEqual(result["assignment_count"], {})
+
     def test_stream_validation_parallel_loop_aborts_when_manual_stop_requested(self):
         manager = self._manager()
         manager.config = {}
