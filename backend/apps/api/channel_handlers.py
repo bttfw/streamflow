@@ -190,7 +190,7 @@ def get_channel_logo_cached_response(
 
     except InvalidLogoResponse as exc:
         logger.warning("Rejected logo %s: %s", logo_id, exc)
-        return jsonify({"error": str(exc)}), 422
+        return jsonify({"error": "Logo response was rejected"}), 422
     except requests.exceptions.RequestException as exc:
         logger.error(f"Error downloading logo {logo_id}: {exc}")
         return jsonify({"error": "Failed to download logo"}), 500

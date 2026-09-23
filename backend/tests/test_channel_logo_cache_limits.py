@@ -2,6 +2,7 @@
 
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import Mock
 
 from flask import Flask
 
@@ -52,6 +53,21 @@ def _fetch(tmp_path: Path, logo_url: str):
 
 def _status(result):
     return result[1] if isinstance(result, tuple) else result.status_code
+
+
+def test_rejected_logo_does_not_expose_exception_details(monkeypatch, tmp_path):
+    marker = "secret://provider:password@internal.example/private-logo-path"
+    download = Mock(side_effect=logo_cache.InvalidLogoResponse(marker))
+    log_warning = Mock()
+    monkeypatch.setattr(channel_handlers, "download_and_cache_logo", download)
+    monkeypatch.setattr(channel_handlers.logger, "warning", log_warning)
+
+    response, status = _fetch(tmp_path, "http://10.10.30.20/logo.png")
+
+    assert status == 422
+    assert response.get_json() == {"error": "Logo response was rejected"}
+    assert marker not in response.get_data(as_text=True)
+    assert marker == str(log_warning.call_args.args[-1])
 
 
 def test_logo_cache_downloads_once_with_safe_headers(monkeypatch, tmp_path):
