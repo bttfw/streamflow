@@ -195,6 +195,18 @@ export function Sidebar({ isCollapsed, setIsCollapsed, navigationDisabled = fals
           <DialogPrimitive.Content
             className="fixed inset-y-0 left-0 z-50 flex w-72 max-w-[calc(100vw-2rem)] flex-col border-r bg-card shadow-xl outline-none"
             aria-describedby={undefined}
+            onKeyDown={event => {
+              // Radix handles Escape during capture. Keep an unhandled key usable
+              // while its layer registration settles after rapid focus changes.
+              // Portal menus and nested dialogs retain their own Escape behavior.
+              if (event.key !== 'Escape' || event.defaultPrevented) return
+              if (!event.currentTarget.contains(event.target)) return
+              if (event.target.closest('[role="dialog"]') !== event.currentTarget) return
+              if (event.target.closest('[role="menu"], [role="listbox"]')) return
+              if (event.currentTarget.querySelector('[aria-haspopup="menu"][aria-expanded="true"]')) return
+              event.preventDefault()
+              setIsOpen(false)
+            }}
             onCloseAutoFocus={event => {
               event.preventDefault()
               const opener = navigationOpener.current
