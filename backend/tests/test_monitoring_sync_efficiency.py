@@ -102,6 +102,18 @@ def test_authoritative_get_is_submitted_without_blocking_monitor_worker(sync_har
     udi.refresh_channel_by_id.assert_called_once_with(9)
 
 
+def test_slow_authoritative_get_does_not_queue_overlapping_requests(sync_harness):
+    service, session, _stream, _remote, _cache, udi, update = sync_harness
+    with patch.object(service.io_pool, 'submit') as submit:
+        with patch('stream_monitoring_service.time.time', return_value=100.0):
+            service._check_sync_enforcement(session)
+        with patch('stream_monitoring_service.time.time', return_value=116.0):
+            service._check_sync_enforcement(session)
+    submit.assert_called_once()
+    udi.refresh_channel_by_id.assert_not_called()
+    update.assert_not_called()
+
+
 @pytest.mark.parametrize('session_type', ['ffmpeg', 'openstream'])
 def test_quarantined_source_is_removed_then_review_can_restore_it(sync_harness, session_type):
     service, session, stream, remote, cache, _udi, update = sync_harness
