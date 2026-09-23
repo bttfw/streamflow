@@ -1285,16 +1285,31 @@ class StreamSessionManager:
             stream_id: Stream ID
             
         Returns:
-            True after Dispatcharr confirms the stream assignment. A failed
-            assignment restores quarantine and restarts its cooldown.
+            True after Dispatcharr confirms the assignment and the persistent
+            dead marker has been cleared. Failures restore quarantine and
+            restart its cooldown.
         """
         if session_id not in self.sessions:
             return False
-            
+
+        try:
+            from apps.core.api_utils import (
+                _fetch_authoritative_channel_stream_ids,
+                add_streams_to_channel,
+                get_channel_assignment_lock,
+                update_channel_streams,
+            )
+            from apps.stream.dead_streams_tracker import DeadStreamsTracker
+        except Exception as e:
+            logger.error("Could not prepare revival of stream %s: %s", stream_id, e)
+            return False
+
         session = self.sessions[session_id]
-        with self.session_locks[session_id]:
+        # Keep StreamFlow channel writers out until both the tracker and the
+        # monitored session state agree on the revived assignment.
+        with self.session_locks[session_id], get_channel_assignment_lock(session.channel_id):
             stream_info = session.streams.get(stream_id)
-            
+
             if not stream_info:
                 return False
             if stream_info.status == 'quarantined':
@@ -1305,26 +1320,38 @@ class StreamSessionManager:
                     stream_info.consecutive_logo_misses,
                     stream_info.loop_duration,
                 )
-                stream_info.status = 'review'
-                stream_info.last_status_change = time.time()
-                
-                # Reset counters for fresh start
-                stream_info.low_speed_start_time = None
-                stream_info.failure_count = 0
-                stream_info.consecutive_logo_misses = 0
-                stream_info.loop_duration = None
-                stream_info.status_reason = None
-                
-                # Remove from persistent blocklist
-                if session.quarantined_stream_ids and stream_id in session.quarantined_stream_ids:
-                    session.quarantined_stream_ids.remove(stream_id)
-                
-                # Add back to Dispatcharr channel
+                tracker = None
+                marker_reason = None
+                marker_was_present = False
+                attempted_add = False
                 try:
-                    from apps.core.api_utils import (
-                        _fetch_authoritative_channel_stream_ids,
-                        add_streams_to_channel,
-                    )
+                    tracker = DeadStreamsTracker()
+                    dead_reasons = tracker.get_dead_stream_reasons([stream_info.url])
+                    if not isinstance(dead_reasons, dict):
+                        raise RuntimeError("Invalid dead stream snapshot before revival")
+                    marker_was_present = stream_info.url in dead_reasons
+                    marker_reason = dead_reasons.get(stream_info.url) or 'unknown'
+
+                    # Clear and verify the persistent marker before touching
+                    # Dispatcharr. A failed tracker write must not expose a
+                    # quarantined source in the monitored channel.
+                    if not tracker.mark_as_alive(stream_info.url):
+                        raise RuntimeError("Could not clear dead stream marker")
+                    remaining_reasons = tracker.get_dead_stream_reasons([stream_info.url])
+                    if not isinstance(remaining_reasons, dict) or stream_info.url in remaining_reasons:
+                        raise RuntimeError("Dead stream marker remained after revival cleanup")
+
+                    stream_info.status = 'review'
+                    stream_info.last_status_change = time.time()
+                    stream_info.low_speed_start_time = None
+                    stream_info.failure_count = 0
+                    stream_info.consecutive_logo_misses = 0
+                    stream_info.loop_duration = None
+                    stream_info.status_reason = None
+                    if session.quarantined_stream_ids:
+                        session.quarantined_stream_ids.discard(stream_id)
+
+                    attempted_add = True
                     added_count = add_streams_to_channel(
                         session.channel_id, [stream_id], allow_dead_streams=True
                     )
@@ -1335,8 +1362,9 @@ class StreamSessionManager:
                                 f"Could not confirm revived stream {stream_id} "
                                 f"in Dispatcharr channel {session.channel_id}"
                             )
+                    self._save_sessions()
                 except Exception as e:
-                    logger.error(f"Failed to restore stream {stream_id} to Dispatcharr: {e}")
+                    logger.error("Failed to revive stream %s: %s", stream_id, e)
                     stream_info.status = 'quarantined'
                     stream_info.status_reason = previous_reason
                     stream_info.last_status_change = time.time()
@@ -1349,10 +1377,35 @@ class StreamSessionManager:
                     if session.quarantined_stream_ids is None:
                         session.quarantined_stream_ids = set()
                     session.quarantined_stream_ids.add(stream_id)
+
+                    # Compensate a partially applied remote write while the
+                    # source is quarantined again. A guarded write cannot
+                    # overwrite a concurrent manual channel edit.
+                    if attempted_add:
+                        try:
+                            assigned_ids = _fetch_authoritative_channel_stream_ids(session.channel_id)
+                            if assigned_ids is None:
+                                raise RuntimeError("Channel assignment unavailable during revival rollback")
+                            if stream_id in assigned_ids and not update_channel_streams(
+                                session.channel_id,
+                                [sid for sid in assigned_ids if sid != stream_id],
+                                expected_current_stream_ids=assigned_ids,
+                            ):
+                                raise RuntimeError("Dispatcharr removal was unconfirmed during revival rollback")
+                        except Exception as rollback_error:
+                            logger.error(
+                                "Could not confirm removal of stream %s after failed revival: %s",
+                                stream_id, rollback_error,
+                            )
+
+                    if marker_was_present and tracker is not None and not tracker.mark_as_dead(
+                        stream_info.url, stream_id, stream_info.name,
+                        session.channel_id, reason=marker_reason,
+                    ):
+                        logger.error("Could not restore dead stream marker for stream %s", stream_id)
                     self._save_sessions()
                     return False
 
-                self._save_sessions()
                 logger.info(f"Revived stream {stream_id} in session {session_id} (moved to review)")
                 return True
             else:

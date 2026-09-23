@@ -11,6 +11,8 @@ from apps.api.stream_sessions_handlers import (
     quarantine_stream_response,
     revive_stream_response,
 )
+from apps.database.manager import get_db_manager
+from apps.stream.dead_streams_tracker import DeadStreamsTracker
 from apps.stream.stream_monitoring_service import StreamMonitoringService
 from apps.stream.stream_session_manager import SessionInfo, StreamInfo, StreamSessionManager
 
@@ -82,7 +84,8 @@ def test_failed_revive_restores_quarantine_and_blocklist():
     previous_change = stream.last_status_change
     stream.failure_count = 3
     stream.consecutive_logo_misses = 2
-    with patch('apps.core.api_utils.add_streams_to_channel', side_effect=RuntimeError('PATCH failed')):
+    with patch('apps.core.api_utils.add_streams_to_channel', side_effect=RuntimeError('PATCH failed')), \
+         patch('apps.core.api_utils._fetch_authoritative_channel_stream_ids', return_value=[]):
         result = manager.revive_stream(session.session_id, 101)
 
     assert result is False
@@ -106,6 +109,67 @@ def test_successful_revive_moves_to_review_after_confirmed_addition():
     assert 101 not in session.quarantined_stream_ids
     add.assert_called_once_with(9, [101], allow_dead_streams=True)
     manager._save_sessions.assert_called_once()
+
+
+def test_successful_revive_clears_persistent_dead_marker():
+    manager, session, stream = _manager_with_stream(status='quarantined', reason='dead')
+    db = get_db_manager()
+    assert db.mark_stream_dead(stream.url, 101, stream.name, 9, reason='unknown')
+
+    with patch('apps.core.api_utils.add_streams_to_channel', return_value=1):
+        result = manager.revive_stream(session.session_id, 101)
+
+    assert result is True
+    assert stream.status == 'review'
+    assert DeadStreamsTracker().get_dead_stream_reasons([stream.url]) == {}
+
+
+def test_failed_dead_marker_clear_does_not_attach_quarantined_stream():
+    manager, session, stream = _manager_with_stream(status='quarantined', reason='dead')
+    db = get_db_manager()
+    assert db.mark_stream_dead(stream.url, 101, stream.name, 9, reason='offline')
+
+    with patch.object(DeadStreamsTracker, 'mark_as_alive', return_value=False), \
+         patch('apps.core.api_utils.add_streams_to_channel') as add:
+        result = manager.revive_stream(session.session_id, 101)
+
+    assert result is False
+    assert stream.status == 'quarantined'
+    assert 101 in session.quarantined_stream_ids
+    assert DeadStreamsTracker().get_dead_stream_reasons([stream.url]) == {stream.url: 'offline'}
+    add.assert_not_called()
+
+
+def test_revive_verifies_dead_marker_is_really_gone():
+    manager, session, stream = _manager_with_stream(status='quarantined', reason='dead')
+    db = get_db_manager()
+    assert db.mark_stream_dead(stream.url, 101, stream.name, 9, reason='unknown')
+
+    with patch.object(DeadStreamsTracker, 'mark_as_alive', return_value=True), \
+         patch('apps.core.api_utils.add_streams_to_channel') as add:
+        result = manager.revive_stream(session.session_id, 101)
+
+    assert result is False
+    assert stream.status == 'quarantined'
+    assert DeadStreamsTracker().get_dead_stream_reasons([stream.url]) == {stream.url: 'unknown'}
+    add.assert_not_called()
+
+
+def test_failed_revive_restores_dead_marker_and_removes_partial_assignment():
+    manager, session, stream = _manager_with_stream(status='quarantined', reason='dead')
+    db = get_db_manager()
+    assert db.mark_stream_dead(stream.url, 101, stream.name, 9, reason='offline')
+
+    with patch('apps.core.api_utils.add_streams_to_channel', side_effect=RuntimeError('PATCH failed')), \
+         patch('apps.core.api_utils._fetch_authoritative_channel_stream_ids', return_value=[101, 102]), \
+         patch('apps.core.api_utils.update_channel_streams', return_value=True) as write:
+        result = manager.revive_stream(session.session_id, 101)
+
+    assert result is False
+    assert stream.status == 'quarantined'
+    assert 101 in session.quarantined_stream_ids
+    assert DeadStreamsTracker().get_dead_stream_reasons([stream.url]) == {stream.url: 'offline'}
+    write.assert_called_once_with(9, [102], expected_current_stream_ids=[101, 102])
 
 
 def test_revive_does_not_succeed_when_addition_was_filtered_out():
