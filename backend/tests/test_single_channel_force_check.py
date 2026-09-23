@@ -70,7 +70,7 @@ class TestSingleChannelForceCheck(unittest.TestCase):
         service = StreamCheckerService()
         
         # Mock _check_channel to avoid actual checking logic
-        service._check_channel = Mock()
+        service._check_channel = Mock(return_value={'dead_streams_count': 0, 'revived_streams_count': 0})
         
         # Call check_single_channel
         result = service.check_single_channel(channel_id=16)
@@ -209,7 +209,7 @@ class TestSingleChannelForceCheck(unittest.TestCase):
         
         # Create service instance
         service = StreamCheckerService()
-        service._check_channel = Mock()
+        service._check_channel = Mock(return_value={'dead_streams_count': 0, 'revived_streams_count': 0})
         
         # Call check_single_channel
         result = service.check_single_channel(channel_id=16)
@@ -271,7 +271,7 @@ class TestSingleChannelForceCheck(unittest.TestCase):
         
         # Create service instance
         service = StreamCheckerService()
-        service._check_channel = Mock()
+        service._check_channel = Mock(return_value={'dead_streams_count': 0, 'revived_streams_count': 0})
         
         # Call check_single_channel
         result = service.check_single_channel(channel_id=16)

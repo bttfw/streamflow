@@ -9956,9 +9956,14 @@ class StreamCheckerService:
                     _check_kwargs['queue_entry_token'] = _queue_entry_token
                 check_result = self._check_channel(channel_id, **_check_kwargs)
                 if not check_result or not isinstance(check_result, dict):
-                    # This should not happen with updated methods, but provide safe fallback
-                    logger.warning(f"_check_channel did not return expected result dict, using defaults")
-                    check_result = {'dead_streams_count': 0, 'revived_streams_count': 0}
+                    logger.error("Quality check returned no valid result for channel %s", channel_name)
+                    clear_operation_progress()
+                    return {
+                        'success': False,
+                        'error': 'channel_check_failed',
+                        'channel_id': channel_id,
+                        'channel_name': channel_name,
+                    }
                 if check_result.get('aborted') or check_result.get('error') == 'aborted':
                     clear_operation_progress()
                     return {

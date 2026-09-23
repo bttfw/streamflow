@@ -364,6 +364,49 @@ class TestSingleChannelM3uUpdateFlagDisabled(unittest.TestCase):
     @patch('stream_checker_service.get_udi_manager')
     @patch('stream_checker_service.StreamCheckConfig')
     @patch('stream_checker_service.get_automation_config_manager')
+    @patch('apps.stream.stream_session_manager.get_session_manager')
+    @patch('stream_checker_service.fetch_channel_streams')
+    def test_missing_quality_result_fails_single_channel_check(
+        self, mock_fetch, mock_session_mgr, mock_acm_factory,
+        mock_config_class, mock_get_udi,
+    ):
+        """An absent or invalid quality result must not produce success statistics."""
+        from apps.stream.stream_checker_service import StreamCheckerService
+
+        channel_id = 43
+        streams = [{'id': 2, 'url': 'http://x/2', 'm3u_account': 5, 'stream_stats': {}}]
+        profile = _make_profile(
+            m3u_update_enabled=False, matching_enabled=False, checking_enabled=True,
+        )
+        mock_config_class.return_value = _make_mock_config()
+        mock_session_mgr.return_value.get_channels_in_active_sessions.return_value = []
+        mock_acm_factory.return_value = _make_mock_acm(profile)
+        mock_fetch.return_value = streams
+
+        for invalid_result in (None, [], 'invalid', {}):
+            with self.subTest(invalid_result=invalid_result):
+                mock_udi = _make_mock_udi(channel_id, 'Test Channel', streams)
+                mock_get_udi.return_value = mock_udi
+                service = StreamCheckerService()
+                service._require_quality_check_connectivity = Mock(return_value=None)
+                service._check_channel = Mock(return_value=invalid_result)
+                service.dead_streams_tracker = Mock()
+                service.dead_streams_tracker.get_dead_streams_for_channel.return_value = {}
+                service.dead_streams_tracker.cleanup_removed_streams.return_value = 0
+                service.progress.clear = Mock(wraps=service.progress.clear)
+
+                result = service.check_single_channel(channel_id=channel_id)
+
+                self.assertIs(result['success'], False)
+                self.assertEqual(result['error'], 'channel_check_failed')
+                self.assertNotIn('stats', result)
+                service._check_channel.assert_called_once()
+                service.progress.clear.assert_called()
+                mock_udi.clear_automation_busy.assert_called_once()
+
+    @patch('stream_checker_service.get_udi_manager')
+    @patch('stream_checker_service.StreamCheckConfig')
+    @patch('stream_checker_service.get_automation_config_manager')
     @patch('stream_checker_service.get_session_manager')
     @patch('stream_checker_service.fetch_channel_streams')
     def test_single_channel_check_records_v7_snapshot_and_visibility_counters(
