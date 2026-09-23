@@ -212,8 +212,22 @@ class _BoundedProbeStderr:
             return
 
         if 'bitrate=' in line and 'bits/s' in line:
-            if re.search(r'bitrate=\s*[0-9]+(?:\.[0-9]+)?\s*[kmg]?bits/s', line, re.IGNORECASE):
-                self._last_bitrate_line = line[-self._MAX_LINE:]
+            bitrate_match = re.search(
+                r'bitrate=\s*([0-9]+(?:\.[0-9]+)?)\s*([kmg]?)bits/s',
+                line,
+                re.IGNORECASE,
+            )
+            if bitrate_match:
+                bitrate_value = float(bitrate_match.group(1))
+                unit = bitrate_match.group(2).lower()
+                if unit == 'm':
+                    bitrate_value *= 1000
+                elif unit == 'g':
+                    bitrate_value *= 1_000_000
+                elif unit == '':
+                    bitrate_value /= 1000
+                if bitrate_value > MIN_VALID_PROGRESS_BITRATE:
+                    self._last_bitrate_line = line[-self._MAX_LINE:]
 
         media_time = _parse_ffmpeg_progress_time(line)
         if media_time is not None and media_time >= self._last_media_time:

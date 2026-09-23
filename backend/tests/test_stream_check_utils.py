@@ -409,6 +409,7 @@ class TestGetStreamInfoAndBitrate(unittest.TestCase):
             "sys.stderr.write('  Stream #0:0: Video: h264, yuv420p, 1280x720, 30 fps\\n'); "
             "sys.stderr.write('Output #0, mpegts, to pipe:1:\\n'); "
             "sys.stderr.write('frame= 30 fps=30 size=500kB time=00:00:01.00 bitrate= 4123.0kbits/s speed=1.0x\\n'); "
+            "sys.stderr.write('frame= 30 fps=30 size=0kB time=00:00:01.00 bitrate= 0.0kbits/s speed=1.0x\\n'); "
             "sys.stderr.flush()"
         )
         original_popen = subprocess.Popen
