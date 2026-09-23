@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useRef } from 'react';
 import { Play, Square, Trash2, Plus, Activity, AlertCircle, LayoutGrid, List, MoreVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -23,20 +23,27 @@ function StreamMonitoring() {
   const [viewMode, setViewMode] = useState('grid');
 
   const [selectedSessions, setSelectedSessions] = useState(new Set());
+  const activeSessionCountRef = useRef(0);
 
   useEffect(() => {
+    if (selectedSession) return undefined;
+    let stopped = false;
+    let timer;
+    const poll = async () => {
+      if (document.visibilityState === 'visible') await loadSessions(false);
+      if (!stopped) timer = setTimeout(poll, activeSessionCountRef.current > 0 ? 5000 : 15000);
+    };
     loadSessions();
-
-    // Poll for updates every 5 seconds for active sessions
-    const interval = setInterval(() => {
-      if (selectedSession) {
-        // Refresh will happen in SessionMonitorView
-      } else {
-        loadSessions(false); // Don't show loading on interval refresh
-      }
-    }, 1000);
-
-    return () => clearInterval(interval);
+    timer = setTimeout(poll, 5000);
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') loadSessions(false);
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [selectedSession]);
 
   const loadSessions = async (showLoading = true) => {
@@ -44,27 +51,22 @@ function StreamMonitoring() {
       if (showLoading) {
         setLoading(true);
       }
-      const [allResult, activeResult] = await Promise.allSettled([
-        streamSessionsAPI.getSessions(),
-        streamSessionsAPI.getSessions('active'),
-      ]);
-
-      if (allResult.status !== 'fulfilled' || activeResult.status !== 'fulfilled') {
-        throw new Error('Failed to load standard sessions');
-      }
-
-      const standardAll = allResult.value.data || [];
-      const standardActive = activeResult.value.data || [];
+      const response = await streamSessionsAPI.getSessions();
+      const standardAll = response.data || [];
+      const standardActive = standardAll.filter(session => session.is_active);
 
       setSessions(standardAll);
       setActiveSessions(standardActive);
+      activeSessionCountRef.current = standardActive.length;
     } catch (err) {
       console.error('Failed to load sessions:', err);
-      toast({
-        title: 'Error',
-        description: 'Failed to load monitoring sessions',
-        variant: 'destructive'
-      });
+      if (showLoading) {
+        toast({
+          title: 'Error',
+          description: 'Failed to load monitoring sessions',
+          variant: 'destructive'
+        });
+      }
     } finally {
       if (showLoading) {
         setLoading(false);
@@ -296,14 +298,15 @@ function StreamMonitoring() {
       ) : (
         <div className="space-y-6 relative pb-20">
           {/* Header */}
-          <div className="flex justify-between items-start">
+          <div className="flex flex-col gap-4 sm:flex-row sm:items-start sm:justify-between">
             <div>
+              <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-primary">Observe</div>
               <h1 className="text-3xl font-bold tracking-tight">Stream Monitoring</h1>
               <p className="text-muted-foreground mt-2">
                 Advanced event-based stream quality monitoring with live reliability scoring
               </p>
             </div>
-            <Button onClick={() => setCreateDialogOpen(true)}>
+            <Button className="w-full sm:w-auto" onClick={() => setCreateDialogOpen(true)}>
               <Plus className="h-4 w-4 mr-2" />
               New Session
             </Button>
@@ -313,16 +316,15 @@ function StreamMonitoring() {
           <Alert>
             <Activity className="h-4 w-4" />
             <AlertDescription>
-              Stream monitoring sessions provide continuous quality assessment for live events.
-              Streams are tested, scored by reliability, and monitored with screenshots to ensure
-              optimal stream selection in Dispatcharr.
+              Monitoring sessions score live stream reliability and manage stream selection in Dispatcharr.
+              FFmpeg sessions can include screenshots; OpenStream sessions show swarm health.
             </AlertDescription>
           </Alert>
 
           {/* Tabs */}
           <Tabs defaultValue="active" className="w-full">
-            <div className="flex justify-between items-center mb-4">
-              <TabsList>
+            <div className="mb-4 flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <TabsList className="w-full sm:w-auto">
                 <TabsTrigger value="active">
                   Active Sessions ({activeSessions.length})
                 </TabsTrigger>
@@ -331,13 +333,15 @@ function StreamMonitoring() {
                 </TabsTrigger>
               </TabsList>
 
-              <div className="flex items-center gap-2">
+              <div className="flex flex-wrap items-center gap-2">
                 <div className="flex border rounded-md mr-2">
                   <Button
                     variant={viewMode === 'grid' ? 'secondary' : 'ghost'}
                     size="sm"
                     className="h-8 w-8 p-0 rounded-r-none"
                     onClick={() => setViewMode('grid')}
+                    aria-label="Grid view"
+                    aria-pressed={viewMode === 'grid'}
                   >
                     <LayoutGrid className="h-4 w-4" />
                   </Button>
@@ -346,6 +350,8 @@ function StreamMonitoring() {
                     size="sm"
                     className="h-8 w-8 p-0 rounded-l-none"
                     onClick={() => setViewMode('list')}
+                    aria-label="List view"
+                    aria-pressed={viewMode === 'list'}
                   >
                     <List className="h-4 w-4" />
                   </Button>
@@ -549,7 +555,10 @@ function SessionCard({ session, onView, onStart, onStop, onDelete, selected, onT
       className={`hover:shadow-lg transition-shadow cursor-pointer relative group ${selected ? 'ring-2 ring-primary border-primary' : ''}`}
       onClick={() => onView(session)}
     >
-      <div
+      <button
+        type="button"
+        aria-label={`Select ${session.channel_name}`}
+        aria-pressed={selected}
         className="absolute top-3 right-3 z-10"
         onClick={(e) => {
           e.stopPropagation();
@@ -559,7 +568,7 @@ function SessionCard({ session, onView, onStart, onStop, onDelete, selected, onT
         <div className={`h-5 w-5 rounded border flex items-center justify-center transition-colors ${selected ? 'bg-primary border-primary text-primary-foreground' : 'bg-background/80 border-input hover:bg-accent'}`}>
           {selected && <div className="h-2.5 w-2.5 rounded-sm bg-current" />}
         </div>
-      </div>
+      </button>
 
       <CardHeader>
         <div className="flex justify-between items-start gap-3">
@@ -577,7 +586,7 @@ function SessionCard({ session, onView, onStart, onStop, onDelete, selected, onT
           <div className="flex-1 min-w-0 pr-6"> {/* Padding for checkbox */}
             <CardTitle className="text-lg">{session.channel_name}</CardTitle>
             <div className="mt-1">
-              <Badge variant="secondary">Standard</Badge>
+              <Badge variant="secondary">{session.session_type === 'openstream' ? 'OpenStream' : 'FFmpeg'}</Badge>
             </div>
             {session.epg_event_title && (
               <p className="text-sm font-medium text-primary mt-1 truncate" title={session.epg_event_title}>
@@ -719,7 +728,7 @@ function SessionTable({
                       )}
                       <div className="min-w-0">
                         <p className="font-medium truncate">{session.channel_name}</p>
-                        <p className="text-xs text-muted-foreground">Standard</p>
+                        <p className="text-xs text-muted-foreground">{session.session_type === 'openstream' ? 'OpenStream' : 'FFmpeg'}</p>
                         {session.epg_event_title && (
                           <p className="text-xs text-muted-foreground truncate" title={session.epg_event_title}>
                             {session.epg_event_title}

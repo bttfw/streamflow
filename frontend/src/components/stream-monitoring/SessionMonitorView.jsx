@@ -32,6 +32,8 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
   const [expandedStreamId, setExpandedStreamId] = useState(null);
   const { toast } = useToast();
   const latestTimestampRef = useRef(null);
+  const sessionActiveRef = useRef(true);
+  const auxiliaryPollRef = useRef({ playing: 0, screenshots: 0 });
 
   // Helper to find the metric closest to the cursor time
   const getSnapshotAtTime = (stream, time) => {
@@ -109,32 +111,46 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
   }, [session?.channel_id, session?.channel_logo_url]);
 
   useEffect(() => {
-    loadSession();
-    if (activePreviewTab === 'screenshots') {
-      loadAliveScreenshots();
-    }
-    loadPlayingStreams();
+    latestTimestampRef.current = null;
+    sessionActiveRef.current = true;
+    auxiliaryPollRef.current = { playing: 0, screenshots: 0 };
+    setSession(null);
+    setLoading(true);
+  }, [sessionId]);
 
-    // Poll for updates every 2 seconds if active
-    const interval = setInterval(() => {
-      // Use setSession functional update to check if session is active before polling
-      setSession(currentSession => {
-        if (currentSession && !currentSession.is_active) {
-          clearInterval(interval);
-          return currentSession;
+  useEffect(() => {
+    let stopped = false;
+    let timer;
+    const poll = async () => {
+      if (document.visibilityState === 'visible' && sessionActiveRef.current) {
+        const now = Date.now();
+        const requests = [loadSession()];
+        if (now - auxiliaryPollRef.current.playing >= 5000) {
+          auxiliaryPollRef.current.playing = now;
+          requests.push(loadPlayingStreams());
         }
-        // These calls are async, we can't easily wait for them here, 
-        // but loadSession itself will skip if it sees inactive (actually it should be stopped by interval clear)
-        if (activePreviewTab === 'screenshots') {
-          loadAliveScreenshots();
+        if (activePreviewTab === 'screenshots' && now - auxiliaryPollRef.current.screenshots >= 5000) {
+          auxiliaryPollRef.current.screenshots = now;
+          requests.push(loadAliveScreenshots());
         }
-        loadPlayingStreams();
-        loadSession();
-        return currentSession;
-      });
-    }, 2000);
-
-    return () => clearInterval(interval);
+        await Promise.all(requests);
+      }
+      if (!stopped && sessionActiveRef.current) timer = setTimeout(poll, 2000);
+    };
+    if (activePreviewTab === 'screenshots' && !sessionActiveRef.current) void loadAliveScreenshots();
+    void poll();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible' && sessionActiveRef.current) {
+        clearTimeout(timer);
+        void poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
   }, [sessionId, activePreviewTab]);
 
   const loadPlayingStreams = async () => {
@@ -161,13 +177,15 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
         });
       }
       latestTimestampRef.current = maxTime;
+      sessionActiveRef.current = Boolean(response.data.is_active);
 
       setSession(currentSession => {
         if (!currentSession) return response.data;
 
         // Merge streams and their metrics
+        const previousById = new Map(currentSession.streams.map(stream => [stream.stream_id, stream]));
         const mergedStreams = response.data.streams.map(newStream => {
-          const prevStream = currentSession.streams.find(s => s.stream_id === newStream.stream_id);
+          const prevStream = previousById.get(newStream.stream_id);
           if (prevStream) {
             const existingTimestamps = new Set(prevStream.metrics_history?.map(m => m.timestamp) || []);
             const newMetrics = (newStream.metrics_history || []).filter(m => !existingTimestamps.has(m.timestamp));
@@ -450,9 +468,9 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
   return (
     <div className="space-y-6 min-w-0">
       {/* Header with Channel Logo and EPG Info */}
-      <div className="flex items-center justify-between min-w-0 gap-4">
+      <div className="flex min-w-0 flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
         <div className="flex items-center gap-4 min-w-0">
-          <Button variant="ghost" size="icon" onClick={onBack}>
+          <Button variant="ghost" size="icon" aria-label="Back to monitoring sessions" onClick={onBack}>
             <ArrowLeft className="h-5 w-5" />
           </Button>
           {logoUrl && (
@@ -466,7 +484,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
             </div>
           )}
           <div className="min-w-0">
-            <h1 className="text-3xl font-bold tracking-tight truncate">{session.channel_name}</h1>
+            <h1 className="truncate text-2xl font-bold tracking-tight sm:text-3xl">{session.channel_name}</h1>
             <p className="text-muted-foreground mt-1 truncate">
               Session Monitor - {session.is_active ? 'Active' : 'Inactive'}
             </p>
@@ -474,7 +492,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
         </div>
         <div className="flex gap-2">
           {session.is_active && (
-            <Button variant="outline" onClick={onStop}>
+            <Button variant="outline" className="w-full sm:w-auto" onClick={onStop}>
               <Square className="h-4 w-4 mr-2" />
               Stop Monitoring
             </Button>
@@ -499,7 +517,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
           </CardHeader>
           {(session.epg_event_start || session.epg_event_end) && (
             <CardContent>
-              <div className="flex gap-6 text-sm">
+              <div className="flex flex-wrap gap-3 text-sm sm:gap-6">
                 {session.epg_event_start && (
                   <div className="flex items-center gap-2">
                     <Clock className="h-4 w-4 text-muted-foreground" />
@@ -544,10 +562,10 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
                 {activePreviewTab === 'screenshots' && (
                   aliveScreenshots.length > 0 ? (
                     <div className="w-full relative overflow-hidden">
-                      <div className="overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-200 dark:scrollbar-thumb-gray-600 dark:scrollbar-track-gray-800" style={{ maxWidth: 'calc(100vw - 400px)' }}>
+                      <div className="max-w-full overflow-x-auto pb-2 scrollbar-thin scrollbar-thumb-gray-400 scrollbar-track-gray-200 dark:scrollbar-thumb-gray-600 dark:scrollbar-track-gray-800">
                         <div className="flex gap-4 pb-4">
                           {aliveScreenshots.map((screenshot) => (
-                            <div key={screenshot.stream_id} className="flex-none w-80">
+                            <div key={screenshot.stream_id} className="w-64 flex-none sm:w-80">
                               <Card>
                                 <CardContent className="p-4">
                                   <div className="aspect-video bg-black rounded-md overflow-hidden mb-3">
@@ -595,7 +613,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
       )}
 
       {/* Stats Cards */}
-      <div className="grid gap-4 md:grid-cols-4">
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
         <StatsCard
           title="Total Streams"
           value={session.streams.length}
@@ -730,7 +748,7 @@ function SessionMonitorView({ sessionId, onBack, onStop }) {
 
       {/* Floating Timeline Button (Shows when timeline is hidden) */}
       {!showTimeline && (
-        <div className="fixed bottom-6 right-6 z-[60] animate-in fade-in slide-in-from-bottom-4 duration-500">
+        <div className="fixed bottom-20 right-4 z-[60] animate-in fade-in slide-in-from-bottom-4 duration-500 lg:bottom-6 lg:right-6">
           <Button
             onClick={() => setShowTimeline(true)}
             className="group relative overflow-hidden bg-zinc-950 hover:bg-zinc-900 text-white border border-white/10 rounded-full h-12 px-6 shadow-[0_8px_30px_rgb(0,0,0,0.4)] flex items-center gap-2 transition-all hover:scale-105 active:scale-95"
@@ -830,6 +848,7 @@ const TransportHealthBadge = ({ status, summary, errorDensity }) => {
 
 // Streams Table Component
 function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, onRevive, playingStreamIds = new Set(), showQuarantined = false, isReview = false, cursorTime, isLive, zoomLevel, adPeriods = [] }) {
+  const [expandedChartId, setExpandedChartId] = useState(null);
   const formatQuality = (stream) => {
     if (!stream.width || !stream.height) return 'Unknown';
     return `${stream.width}x${stream.height}`;
@@ -1070,7 +1089,17 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
               {!showQuarantined && (
                 <TableRow>
                   <TableCell colSpan={10} className="bg-muted/30 p-2">
-                    <SpeedMetricsChart sessionId={sessionId} streamId={stream.stream_id} cursorTime={cursorTime} isLive={isLive} zoomLevel={zoomLevel} adPeriods={adPeriods} />
+                    <button
+                      type="button"
+                      className="rounded px-2 py-1 text-xs font-semibold text-primary hover:underline focus-visible:outline focus-visible:outline-2 focus-visible:outline-primary"
+                      aria-expanded={expandedChartId === stream.stream_id}
+                      onClick={() => setExpandedChartId(current => current === stream.stream_id ? null : stream.stream_id)}
+                    >
+                      {expandedChartId === stream.stream_id ? 'Hide' : 'Show'} speed history for {stream.name}
+                    </button>
+                    {expandedChartId === stream.stream_id && (
+                      <SpeedMetricsChart sessionId={sessionId} streamId={stream.stream_id} cursorTime={cursorTime} isLive={isLive} zoomLevel={zoomLevel} />
+                    )}
                   </TableCell>
                 </TableRow>
               )}
@@ -1083,41 +1112,57 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
 }
 
 // Speed Metrics Chart Component
-function SpeedMetricsChart({ sessionId, streamId, cursorTime, isLive, zoomLevel, adPeriods }) {
+function SpeedMetricsChart({ sessionId, streamId, cursorTime, isLive, zoomLevel }) {
   const [allMetrics, setAllMetrics] = useState([]);
   const [loading, setLoading] = useState(true);
+  const lastTimestampRef = useRef(null);
 
   useEffect(() => {
-    loadMetrics();
-
-    // Refresh metrics every 5 seconds
-    const interval = setInterval(loadMetrics, 5000);
-    return () => clearInterval(interval);
-  }, [sessionId, streamId]);
-
-  const lastTimestampRef = React.useRef(null);
-
-  const loadMetrics = async () => {
-    try {
-      const response = await streamSessionsAPI.getStreamMetrics(sessionId, streamId, lastTimestampRef.current);
-      const newMetrics = response.data?.metrics || [];
-      
-      if (newMetrics.length > 0) {
-        lastTimestampRef.current = newMetrics[newMetrics.length - 1].timestamp;
-        setAllMetrics(prev => {
-          // Prevent duplicates by checking the last timestamp
-          const filterPrev = prev.length > 0 && newMetrics[0].timestamp <= prev[prev.length - 1].timestamp 
-            ? prev.filter(p => p.timestamp < newMetrics[0].timestamp)
-            : prev;
-          return [...filterPrev, ...newMetrics];
-        });
+    let stopped = false;
+    let timer;
+    let polling = false;
+    const loadMetrics = async () => {
+      try {
+        const response = await streamSessionsAPI.getStreamMetrics(sessionId, streamId, lastTimestampRef.current);
+        if (stopped) return;
+        const newMetrics = response.data?.metrics || [];
+        if (newMetrics.length > 0) {
+          lastTimestampRef.current = newMetrics[newMetrics.length - 1].timestamp;
+          setAllMetrics(previous => {
+            const firstNewTimestamp = newMetrics[0].timestamp;
+            return [...previous.filter(metric => metric.timestamp < firstNewTimestamp), ...newMetrics].slice(-3600);
+          });
+        }
+      } catch (err) {
+        if (!stopped) console.error('Failed to load metrics:', err);
+      } finally {
+        if (!stopped) setLoading(false);
       }
-      setLoading(false);
-    } catch (err) {
-      console.error('Failed to load metrics:', err);
-      setLoading(false);
-    }
-  };
+    };
+    const poll = async () => {
+      if (stopped || polling) return;
+      polling = true;
+      try {
+        if (document.visibilityState === 'visible') await loadMetrics();
+      } finally {
+        polling = false;
+        if (!stopped) timer = setTimeout(poll, 5000);
+      }
+    };
+    void poll();
+    const onVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        clearTimeout(timer);
+        void poll();
+      }
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => {
+      stopped = true;
+      clearTimeout(timer);
+      document.removeEventListener('visibilitychange', onVisibilityChange);
+    };
+  }, [sessionId, streamId]);
 
   // Determine the reference time (end of the visible window)
   const referenceTime = useMemo(() => {
@@ -1167,11 +1212,7 @@ function SpeedMetricsChart({ sessionId, streamId, cursorTime, isLive, zoomLevel,
   };
 
   if (loading) {
-    return (
-      <div className="h-24 flex items-center justify-center text-muted-foreground text-sm">
-        Loading metrics...
-      </div>
-    );
+    return <div className="flex h-24 items-center justify-center text-sm text-muted-foreground">Loading metrics...</div>;
   }
 
   // If we have no metrics AT ALL for this stream (never recorded)

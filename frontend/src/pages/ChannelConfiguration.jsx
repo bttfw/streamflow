@@ -1,4 +1,4 @@
-import { useState, useEffect, useCallback, useRef } from 'react'
+import { useState, useEffect, useCallback, useMemo, useRef } from 'react'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card.jsx'
 import { Button } from '@/components/ui/button.jsx'
 import { Input } from '@/components/ui/input.jsx'
@@ -2089,7 +2089,8 @@ export default function ChannelConfiguration() {
 
   // Filter channels based on search query and group filter
   // Use orderedChannels as the base to ensure consistent ordering between tabs
-  const filteredChannels = orderedChannels.filter(channel => {
+  const groupsById = useMemo(() => new Map(groups.map(group => [String(group.id), group])), [groups])
+  const filteredChannels = useMemo(() => orderedChannels.filter(channel => {
     // Apply group filter
     if (filterByGroup !== 'all' && channel.channel_group_id !== parseInt(filterByGroup)) {
       return false
@@ -2104,23 +2105,23 @@ export default function ChannelConfiguration() {
     const channelId = String(channel.id)
 
     // Get group name for search
-    const group = groups.find(g => g.id === channel.channel_group_id)
+    const group = groupsById.get(String(channel.channel_group_id))
     const groupName = group ? group.name.toLowerCase() : ''
 
     return channelName.includes(query) ||
       channelNumber.includes(query) ||
       channelId.includes(query) ||
       groupName.includes(query)
-  })
+  }), [orderedChannels, filterByGroup, searchQuery, groupsById])
 
   // Sort by group if enabled
-  const displayChannels = sortByGroup
+  const displayChannels = useMemo(() => sortByGroup
     ? [...filteredChannels].sort((a, b) => {
-      const groupA = groups.find(g => g.id === a.channel_group_id)?.name || ''
-      const groupB = groups.find(g => g.id === b.channel_group_id)?.name || ''
+      const groupA = groupsById.get(String(a.channel_group_id))?.name || ''
+      const groupB = groupsById.get(String(b.channel_group_id))?.name || ''
       return groupA.localeCompare(groupB) || (a.channel_number || 0) - (b.channel_number || 0)
     })
-    : filteredChannels
+    : filteredChannels, [filteredChannels, sortByGroup, groupsById])
 
   // Filter ordered channels - simplify since group visibility is removed
   const visibleOrderedChannels = orderedChannels
@@ -2319,6 +2320,7 @@ export default function ChannelConfiguration() {
     <TooltipProvider>
       <div className="space-y-6">
         <div>
+          <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-primary">Organize</div>
           <h1 className="text-3xl font-bold tracking-tight">Channel Configuration</h1>
           <p className="text-muted-foreground">
             View and manage channel regex patterns, settings, and ordering
@@ -2326,16 +2328,16 @@ export default function ChannelConfiguration() {
         </div>
 
         <Tabs value={activeTab} onValueChange={setActiveTab} className="w-full">
-          <TabsList className="grid w-full grid-cols-3">
-            <TabsTrigger value="regex">Regex Configuration</TabsTrigger>
-            <TabsTrigger value="ordering">Channel Order</TabsTrigger>
-            <TabsTrigger value="groups">Group Configuration</TabsTrigger>
+          <TabsList className="flex h-auto w-full justify-start gap-1 overflow-x-auto p-1">
+            <TabsTrigger value="regex" className="shrink-0">Regex Configuration</TabsTrigger>
+            <TabsTrigger value="ordering" className="shrink-0">Channel Order</TabsTrigger>
+            <TabsTrigger value="groups" className="shrink-0">Group Configuration</TabsTrigger>
           </TabsList>
 
           <TabsContent value="regex" className="space-y-6">
             {/* Search Bar and Export/Import Buttons */}
-            <div className="flex items-center gap-2">
-              <div className="relative flex-1 max-w-md">
+            <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
+              <div className="relative w-full sm:max-w-md sm:flex-1">
                 <Search className="absolute left-3 top-1/2 transform -translate-y-1/2 h-4 w-4 text-muted-foreground" />
                 <Input
                   type="text"
@@ -2383,7 +2385,7 @@ export default function ChannelConfiguration() {
               )}
 
               {/* Export/Import Buttons */}
-              <div className="flex items-center gap-2 ml-auto">
+              <div className="ml-auto flex w-full flex-wrap items-center gap-2 sm:w-auto">
                 <Button
                   variant="outline"
                   size="sm"
@@ -2653,7 +2655,7 @@ export default function ChannelConfiguration() {
                   {/* Table Header */}
                   <Card>
                     <CardContent className="p-0">
-                      <div className="border-b bg-muted/50">
+                      <div className="hidden border-b bg-muted/50 lg:block">
                         <div className={`gap-2 px-3 py-3 font-medium text-sm`} style={{ gridTemplateColumns: REGEX_TABLE_GRID_COLS, display: 'grid' }}>
                           <div className="flex items-center">
                             <Checkbox
@@ -2684,7 +2686,7 @@ export default function ChannelConfiguration() {
                       {/* Table Rows */}
                       <div className="divide-y">
                         {paginatedChannels.map(channel => {
-                          const group = groups.find(g => String(g.id) === String(channel.channel_group_id))
+                          const group = groupsById.get(String(channel.channel_group_id))
 
 
                           return (

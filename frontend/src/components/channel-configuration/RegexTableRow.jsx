@@ -411,9 +411,44 @@ export function RegexTableRow({
 
   return (
     <div className="border-b last:border-b-0">
+      <div className="space-y-3 p-3 lg:hidden">
+        <div className="flex items-start gap-3">
+          <Checkbox
+            aria-label={`Select ${channel.name}`}
+            checked={selectedChannels?.has(channel.id)}
+            onCheckedChange={() => onToggleChannel?.(channel.id)}
+            className="mt-2"
+          />
+          <div className="flex h-9 w-9 shrink-0 items-center justify-center overflow-hidden rounded-md bg-muted">
+            {logoUrl && !logoError ? (
+              <img src={logoUrl} alt="" className="h-full w-full object-contain" onError={() => setLogoError(true)} />
+            ) : <span className="text-sm font-bold text-muted-foreground">{channel.name?.charAt(0) || '?'}</span>}
+          </div>
+          <div className="min-w-0 flex-1">
+            <div className="truncate text-sm font-semibold">{channel.name}</div>
+            <div className="truncate text-xs text-muted-foreground">#{channel.channel_number || '—'} · {group?.name || 'Ungrouped'}</div>
+            <div className="mt-1"><ActiveProfileLines activeProfile={activeProfile} /></div>
+          </div>
+          <Button variant="outline" size="icon" aria-label={`${expanded ? 'Collapse' : 'Expand'} ${channel.name}`} aria-expanded={expanded} onClick={() => onToggleExpanded?.(channel.id)}>
+            <ChevronDown className={`h-4 w-4 transition-transform ${expanded ? 'rotate-180' : ''}`} />
+          </Button>
+        </div>
+        <div className="flex flex-wrap items-center gap-2 pl-12 text-xs">
+          <Badge variant={patternCount ? 'secondary' : 'outline'}>{patternCount || groupMatchingPatternCount} patterns{!patternCount && groupMatchingPatternCount ? ' (group)' : ''}</Badge>
+          {matchByTvgId && <Badge variant="outline">TVG-ID</Badge>}
+          <span className="text-muted-foreground">{channel.automation_periods_count || 0} periods</span>
+          <span className="text-muted-foreground">{matchCount ?? '—'} matches / {channel.streams?.length ?? 0} assigned</span>
+        </div>
+        <div className="flex gap-2 pl-12">
+          <Button variant="outline" size="sm" onClick={() => onPreviewMatch?.(channel.id, 'global')}><Eye className="mr-1.5 h-4 w-4" />Preview</Button>
+          <Button variant="outline" size="sm" onClick={() => onCheckChannel?.(channel.id)} disabled={isChecking}>
+            {isChecking ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" /> : <Activity className="mr-1.5 h-4 w-4" />}Check
+          </Button>
+        </div>
+      </div>
       {/* ── Collapsed row ── */}
       <div
-        className="grid items-center gap-2 px-3 py-3 hover:bg-muted/30 transition-colors"
+        className="hidden items-center gap-2 px-3 py-3 transition-colors hover:bg-muted/30 lg:grid"
         style={{ gridTemplateColumns: REGEX_TABLE_GRID_COLS }}
       >
         {/* Checkbox */}

@@ -66,6 +66,7 @@ const AUTOMATION_STAGES = [
 ]
 
 const LIVE_STATUS_POLL_MS = 1000
+const IDLE_STATUS_POLL_MS = 5000
 const BACKGROUND_DATA_POLL_MS = 30000
 
 const formatDuration = (seconds) => {
@@ -131,6 +132,8 @@ export default function Dashboard() {
   const [udiSyncing, setUdiSyncing] = useState(false)
   const [dashboardNow, setDashboardNow] = useState(() => Date.now())
   const statusPollInFlight = useRef(false)
+  const liveContextInFlight = useRef(false)
+  const activeRunRef = useRef(false)
   // debug_mode gates the fault injection panel (Phase 5 — not yet built)
   const [debugMode, setDebugMode] = useState(false)
   const { toast } = useToast()
@@ -138,25 +141,53 @@ export default function Dashboard() {
   useEffect(() => {
     setDashboardNow(Date.now())
     loadStatus()
+    loadSecondaryStatus()
+    loadLiveContext()
     loadPlaylists()
     loadPeriods()
     loadEnvironment()
     loadUdiStats()
 
-    const statusInterval = setInterval(() => {
+    let statusTimer
+    let stopped = false
+    const scheduleStatus = (delayMs = activeRunRef.current ? LIVE_STATUS_POLL_MS : IDLE_STATUS_POLL_MS) => {
+      if (stopped) return
+      statusTimer = setTimeout(async () => {
+        if (document.visibilityState === 'visible') {
+          setDashboardNow(Date.now())
+          await loadStatus()
+        }
+        scheduleStatus()
+      }, delayMs)
+    }
+    scheduleStatus(LIVE_STATUS_POLL_MS)
+
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return
       setDashboardNow(Date.now())
       loadStatus()
-    }, LIVE_STATUS_POLL_MS)
+      loadSecondaryStatus()
+      loadLiveContext()
+      loadUdiStats()
+    }
+    document.addEventListener('visibilitychange', onVisibilityChange)
 
     const backgroundInterval = setInterval(() => {
-      loadStatus()
+      if (document.visibilityState !== 'visible') return
+      loadSecondaryStatus()
       loadPlaylists()
       loadUdiStats()
     }, BACKGROUND_DATA_POLL_MS)
+    const liveContextInterval = setInterval(() => {
+      if (document.visibilityState === 'visible') loadLiveContext()
+    }, 5000)
 
     return () => {
-      clearInterval(statusInterval)
+      stopped = true
+      clearTimeout(statusTimer)
       clearInterval(backgroundInterval)
+      clearInterval(liveContextInterval)
+      document.removeEventListener('visibilitychange', onVisibilityChange)
     }
   }, [])
 
@@ -166,12 +197,9 @@ export default function Dashboard() {
     }
     statusPollInFlight.current = true
     try {
-      const [automationResult, streamCheckerResult, automationConfigResult, shadowMonitorResult, viewerActivityResult] = await Promise.allSettled([
+      const [automationResult, streamCheckerResult] = await Promise.allSettled([
         automationAPI.getStatus(),
         streamCheckerAPI.getStatus(),
-        automationAPI.getConfig(),
-        shadowBlankMonitorAPI.getStatus(),
-        viewerActivityAPI.getStatus(),
       ])
 
       if (automationResult.status === 'fulfilled') {
@@ -180,22 +208,22 @@ export default function Dashboard() {
       if (streamCheckerResult.status === 'fulfilled') {
         setStreamCheckerStatus(streamCheckerResult.value.data)
       }
-      if (automationConfigResult.status === 'fulfilled') {
-        setAutomationConfig(automationConfigResult.value.data || {})
-      }
-      if (shadowMonitorResult.status === 'fulfilled') {
-        setShadowMonitorStatus(shadowMonitorResult.value.data)
-      }
-      if (viewerActivityResult.status === 'fulfilled') {
-        setViewerActivityStatus(viewerActivityResult.value.data)
+      const automation = automationResult.status === 'fulfilled' ? automationResult.value.data : null
+      const checker = streamCheckerResult.status === 'fulfilled' ? streamCheckerResult.value.data : null
+      const activeNow = Boolean(
+          ['running', 'queued'].includes(automation?.run_status?.state)
+          || automation?.run_status?.active
+          || checker?.checking || checker?.stream_checking_mode
+          || Number(checker?.queue?.in_progress || 0) > 0
+          || Number(checker?.queue?.queue_size || 0) > 0
+        )
+      if (activeNow || (automation && checker)) {
+        activeRunRef.current = activeNow
       }
 
       const failedResults = [
         automationResult,
         streamCheckerResult,
-        automationConfigResult,
-        shadowMonitorResult,
-        viewerActivityResult,
       ].filter(result => result.status === 'rejected')
 
       if (failedResults.length > 0) {
@@ -209,6 +237,30 @@ export default function Dashboard() {
     } finally {
       statusPollInFlight.current = false
       setLoading(false)
+    }
+  }
+
+  const loadSecondaryStatus = async () => {
+    try {
+      const response = await automationAPI.getConfig()
+      setAutomationConfig(response.data || {})
+    } catch (error) {
+      console.warn('Failed to load automation configuration:', error)
+    }
+  }
+
+  const loadLiveContext = async () => {
+    if (liveContextInFlight.current) return
+    liveContextInFlight.current = true
+    try {
+      const [shadowResult, viewersResult] = await Promise.allSettled([
+        shadowBlankMonitorAPI.getStatus(),
+        viewerActivityAPI.getStatus(),
+      ])
+      if (shadowResult.status === 'fulfilled') setShadowMonitorStatus(shadowResult.value.data)
+      if (viewersResult.status === 'fulfilled') setViewerActivityStatus(viewersResult.value.data)
+    } finally {
+      liveContextInFlight.current = false
     }
   }
 
@@ -464,6 +516,7 @@ export default function Dashboard() {
 
       await automationAPI.updateConfig({ enabled_m3u_accounts: newEnabledAccounts })
       toast({ title: "Success", description: `Playlist ${currentlyEnabled ? 'disabled' : 'enabled'} successfully` })
+      await loadSecondaryStatus()
       await loadStatus()
       await loadPlaylists()
     } catch (err) {
@@ -774,9 +827,16 @@ export default function Dashboard() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
-        <p className="text-muted-foreground">Monitor and control your stream automation</p>
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <div className="mb-2 text-[11px] font-bold uppercase tracking-[0.16em] text-primary">Overview</div>
+          <h1 className="text-3xl font-bold tracking-tight">Dashboard</h1>
+          <p className="text-muted-foreground">Monitor and control your stream automation</p>
+        </div>
+        <div className="flex flex-wrap gap-2">
+          <Button variant="outline" size="sm" asChild><Link to="/channels">Manage channels</Link></Button>
+          <Button variant="outline" size="sm" asChild><Link to="/stream-monitoring">Open monitoring</Link></Button>
+        </div>
       </div>
 
       {showAutomationRunCard && (
@@ -908,6 +968,9 @@ export default function Dashboard() {
               </div>
             )}
 
+            <details className="rounded-lg border bg-muted/20 p-3">
+              <summary className="cursor-pointer text-sm font-semibold marker:text-primary">Stages and performance details</summary>
+              <div className="mt-4 space-y-3">
             <div className="grid gap-2 md:grid-cols-4 lg:grid-cols-8">
               {displayStageCards.map((stage) => {
                 const isCurrent = stage.id === displayRunStageId && stage.status === 'running'
@@ -961,6 +1024,8 @@ export default function Dashboard() {
                 </div>
               ))}
             </div>
+              </div>
+            </details>
           </CardContent>
         </Card>
       )}
@@ -1262,6 +1327,9 @@ export default function Dashboard() {
       </Card>
 
       {/* System Information */}
+      <details className="rounded-xl border bg-card p-4">
+        <summary className="cursor-pointer text-sm font-semibold marker:text-primary">System details</summary>
+        <div className="mt-4">
       <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
         <Card>
           <CardHeader><CardTitle>Automation Configuration</CardTitle></CardHeader>
@@ -1365,11 +1433,16 @@ export default function Dashboard() {
           </CardContent>
         </Card>
       </div>
+        </div>
+      </details>
 
       {/* Upcoming Automation Events */}
       <UpcomingAutomationEvents />
 
       {/* Available Playlists */}
+      <details className="rounded-xl border bg-card p-4">
+        <summary className="cursor-pointer text-sm font-semibold marker:text-primary">Global playlist visibility</summary>
+        <div className="mt-4">
       <Card>
         <CardHeader>
           <CardTitle>Global Playlist Visibility</CardTitle>
@@ -1410,6 +1483,8 @@ export default function Dashboard() {
           )}
         </CardContent>
       </Card>
+        </div>
+      </details>
     </div>
   )
 }
