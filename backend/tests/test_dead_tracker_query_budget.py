@@ -1,5 +1,6 @@
 """Query budgets for dead-stream lookups in matching and channel writes."""
 
+import pytest
 from sqlalchemy import event
 
 from apps.core.api_utils import filter_dead_streams
@@ -75,7 +76,7 @@ def test_revival_does_not_report_success_when_delete_fails(clean_test_db, monkey
     assert tracker.is_dead(url) is True
 
 
-def test_filter_falls_back_to_individual_lookup_if_snapshot_fails(clean_test_db, monkeypatch):
+def test_filter_refuses_write_if_snapshot_fails(clean_test_db, monkeypatch):
     db = get_db_manager()
     db.mark_stream_dead("http://example.test/offline", 1, "Offline", reason="offline")
     db.mark_stream_dead("http://example.test/quality", 2, "Quality", reason="low_quality")
@@ -85,5 +86,6 @@ def test_filter_falls_back_to_individual_lookup_if_snapshot_fails(clean_test_db,
 
     monkeypatch.setattr(DeadStreamsTracker, "get_dead_stream_reasons", fail_snapshot)
     urls = {1: "http://example.test/offline", 2: "http://example.test/quality"}
-    assert filter_dead_streams([1, 2], urls) == ([2], 1)
-    assert filter_dead_streams([1, 2], urls, only_offline=False) == ([], 2)
+    for only_offline in (True, False):
+        with pytest.raises(RuntimeError, match="Dead stream snapshot unavailable"):
+            filter_dead_streams([1, 2], urls, only_offline=only_offline)

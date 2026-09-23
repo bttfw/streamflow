@@ -473,7 +473,10 @@ def quarantine_stream_response(*, session_id: str, stream_id: int, get_session_m
             return (
                 jsonify(
                     {
-                        "error": "Failed to quarantine stream. It may already be quarantined or session/stream not found."
+                        "error": (
+                            "Could not complete quarantine. The stream or session may be missing, "
+                            "or Dispatcharr removal may be unconfirmed; refresh and retry."
+                        )
                     }
                 ),
                 400,
@@ -494,7 +497,10 @@ def revive_stream_response(*, session_id: str, stream_id: int, get_session_manag
             return (
                 jsonify(
                     {
-                        "error": "Failed to revive stream. It may not be quarantined or session not found."
+                        "error": (
+                            "Could not complete revival. The stream or session may be missing, "
+                            "or Dispatcharr assignment may be unconfirmed; refresh and retry."
+                        )
                     }
                 ),
                 400,

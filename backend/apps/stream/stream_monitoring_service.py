@@ -241,22 +241,29 @@ class StreamMonitoringService:
                     return
     
                 # Mark as dead in tracker
-                self.dead_streams_tracker.mark_as_dead(
-                    stream_url=stream_info.url,
-                    stream_id=stream_id,
-                    stream_name=stream_info.name,
-                    channel_id=session.channel_id
-                )
+                try:
+                    self.dead_streams_tracker.mark_as_dead(
+                        stream_url=stream_info.url,
+                        stream_id=stream_id,
+                        stream_name=stream_info.name,
+                        channel_id=session.channel_id,
+                    )
+                except Exception as tracker_error:
+                    logger.warning(
+                        "Could not record dead stream %s before quarantine removal: %s",
+                        stream_id, tracker_error,
+                    )
                 
                 # Remove from channel (but not delete from UDI)
-                udi = get_udi_manager()
-                channel = udi.get_channel_by_id(session.channel_id)
-                
-                if channel:
-                    current_streams = channel.get('streams', [])
+                from apps.core.api_utils import (
+                    _fetch_authoritative_channel_stream_ids,
+                    update_channel_streams,
+                    change_channel_stream,
+                )
+                current_streams = _fetch_authoritative_channel_stream_ids(session.channel_id)
+                if current_streams is not None:
                     if stream_id in current_streams:
                         new_streams = [sid for sid in current_streams if sid != stream_id]
-                        from apps.core.api_utils import update_channel_streams, change_channel_stream
                         success = update_channel_streams(
                             session.channel_id,
                             new_streams,
@@ -265,10 +272,10 @@ class StreamMonitoringService:
                         
                         if success:
                             logger.info(f"Removed {reason} stream {stream_id} from Dispatcharr channel {session.channel_id}")
-                            udi.refresh_channel_by_id(session.channel_id)
                             
                             # If the removed stream was currently playing and reason merits a forced change
                             if reason in ["logo-mismatch", "looping"]:
+                                udi = get_udi_manager()
                                 playing_streams = udi.get_playing_stream_ids()
                                 if stream_id in playing_streams:
                                     logger.info(f"Quarantined stream {stream_id} is currently playing. Finding replacement...")
@@ -290,7 +297,7 @@ class StreamMonitoringService:
                     else:
                         logger.info(f"{reason} stream {stream_id} was not in channel {session.channel_id} streams list")
                 else:
-                    logger.warning(f"Channel {session.channel_id} not found, could not remove {reason} stream {stream_id}")
+                    logger.warning(f"Could not read channel {session.channel_id}; {reason} stream {stream_id} removal is unconfirmed")
     
             except Exception as e:
                 logger.error(f"Error removing {reason} stream from Dispatcharr: {e}", exc_info=True)
@@ -629,7 +636,7 @@ class StreamMonitoringService:
                 else:
                     logger.error(f"Failed to start monitor for stream {stream_id} in session {session_id}")
                     # Monitor failed to start (e.g. invalid URL), quarantine immediately
-                    self.session_manager.quarantine_stream(session_id, stream_id)
+                    self.session_manager.quarantine_stream(session_id, stream_id, remove_from_dispatcharr=False)
                     self._remove_stream_from_dispatcharr(session_id, stream_id, "monitor-start-failed")
 
     def _start_sidecar_detector(self, session_id: str, stream_id: int, port: int):
@@ -695,13 +702,6 @@ class StreamMonitoringService:
             
             if is_fatal:
                 logger.warning(f"Stream {stream_id} marked as dead (FATAL) in session {session_id}: {stats.error_message}")
-                self.dead_streams_tracker.mark_as_dead(
-                    stream_url=stream_info.url,
-                    stream_id=stream_id,
-                    stream_name=stream_info.name,
-                    channel_id=session.channel_id
-                )
-                
                 # Stop and cleanup monitor
                 with self._state_lock:
                     if session_id in self.monitors and stream_id in self.monitors[session_id]:
@@ -710,7 +710,7 @@ class StreamMonitoringService:
                         del self.monitors[session_id][stream_id]
                 
                 # Quarantine via session manager to update blocklist
-                self.session_manager.quarantine_stream(session_id, stream_id, reason=stats.error_message)
+                self.session_manager.quarantine_stream(session_id, stream_id, remove_from_dispatcharr=False, reason=stats.error_message)
                 self._remove_stream_from_dispatcharr(session_id, stream_id, "dead")
             else:
                 logger.info(f"Stream {stream_id} needs RESTART (non-fatal error) in session {session_id}: {stats.error_message}")
@@ -889,7 +889,7 @@ class StreamMonitoringService:
                                 monitor.stop()
                                 if stream_id in self.monitors.get(session_id, {}):
                                     del self.monitors[session_id][stream_id]
-                                self.session_manager.quarantine_stream(session_id, stream_id, reason='looping-repeated')
+                                self.session_manager.quarantine_stream(session_id, stream_id, remove_from_dispatcharr=False, reason='looping-repeated')
                                 self._remove_stream_from_dispatcharr(session_id, stream_id, "looping")
                                 continue
                 
@@ -930,7 +930,7 @@ class StreamMonitoringService:
                 with self._state_lock:
                     if stream_id in self.monitors.get(session_id, {}):
                         del self.monitors[session_id][stream_id]
-                self.session_manager.quarantine_stream(session_id, stream_id)
+                self.session_manager.quarantine_stream(session_id, stream_id, remove_from_dispatcharr=False)
                 self._remove_stream_from_dispatcharr(session_id, stream_id, "logo-mismatch")
                 continue
 
@@ -942,7 +942,7 @@ class StreamMonitoringService:
                     monitor.stop()
                     if stream_id in self.monitors.get(session_id, {}):
                         del self.monitors[session_id][stream_id]
-                    self.session_manager.quarantine_stream(session_id, stream_id, reason='dead')
+                    self.session_manager.quarantine_stream(session_id, stream_id, remove_from_dispatcharr=False, reason='dead')
                     self._remove_stream_from_dispatcharr(session_id, stream_id, "dead")
                 else:
                     logger.debug(f"Stream {stream_id} triggered RESTART (non-fatal) in session {session_id}. Error: {stats.error_message}")
@@ -980,7 +980,7 @@ class StreamMonitoringService:
                                 monitor.stop()
                                 if stream_id in self.monitors.get(session_id, {}):
                                     del self.monitors[session_id][stream_id]
-                                self.session_manager.quarantine_stream(session_id, stream_id)
+                                self.session_manager.quarantine_stream(session_id, stream_id, remove_from_dispatcharr=False)
                                 self._remove_stream_from_dispatcharr(session_id, stream_id, "slow-speed")
                     else:
                         stream_info.low_speed_start_time = None

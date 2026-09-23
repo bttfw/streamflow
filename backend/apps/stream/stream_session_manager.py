@@ -1143,7 +1143,9 @@ class StreamSessionManager:
             remove_from_dispatcharr: If True, also removes the stream from Dispatcharr channel
             
         Returns:
-            True if quarantined successfully
+            True when the session state changed and, if requested, removal from
+            Dispatcharr was confirmed. The state remains quarantined on a write
+            failure so monitoring can retry safely.
         """
         if session_id not in self.sessions:
             logger.error(f"Session {session_id} not found")
@@ -1178,9 +1180,6 @@ class StreamSessionManager:
         # Remove from Dispatcharr channel if requested
         if remove_from_dispatcharr:
             try:
-                from apps.udi import get_udi_manager
-                udi = get_udi_manager()
-                
                 # Mark as dead in tracker first
                 try:
                     from apps.stream.dead_streams_tracker import DeadStreamsTracker
@@ -1195,36 +1194,45 @@ class StreamSessionManager:
                 except Exception as e:
                     logger.warning(f"Failed to mark stream {stream_id} as dead: {e}")
 
-                # Remove from channel (but not delete from UDI)
-                channel = udi.get_channel_by_id(session.channel_id)
-                if channel:
-                    current_streams = channel.get('streams', [])
-                    if stream_id in current_streams:
-                        # Create new list without the quarantined stream
-                        new_streams = [sid for sid in current_streams if sid != stream_id]
-                        
-                        # Update channel with new stream list
-                        # use api_utils to ensure proper update
-                        from apps.core.api_utils import update_channel_streams
-                        success = update_channel_streams(
-                            session.channel_id,
-                            new_streams,
-                            expected_current_stream_ids=list(current_streams),
+                # The UDI cache may be stale. Confirm the current assignment
+                # directly before removing, and treat an unavailable read as
+                # an incomplete quarantine operation.
+                from apps.core.api_utils import (
+                    _fetch_authoritative_channel_stream_ids,
+                    update_channel_streams,
+                )
+                current_streams = _fetch_authoritative_channel_stream_ids(session.channel_id)
+                if current_streams is None:
+                    logger.warning(
+                        "Could not confirm channel %s assignment while quarantining stream %s",
+                        session.channel_id, stream_id,
+                    )
+                    return False
+                if stream_id in current_streams:
+                    new_streams = [sid for sid in current_streams if sid != stream_id]
+                    if not update_channel_streams(
+                        session.channel_id,
+                        new_streams,
+                        expected_current_stream_ids=current_streams,
+                    ):
+                        logger.warning(
+                            "Could not confirm removal of quarantined stream %s from channel %s",
+                            stream_id, session.channel_id,
                         )
-                        
-                        if success:
-                            logger.debug(f"Removed quarantined stream {stream_id} from Dispatcharr channel {session.channel_id}")
-                            # Refresh channel in UDI
-                            udi.refresh_channel_by_id(session.channel_id)
-                        else:
-                            logger.warning(f"Failed to update channel {session.channel_id} to remove stream {stream_id}")
-                    else:
-                        logger.info(f"Stream {stream_id} was not in channel {session.channel_id} streams list")
+                        return False
+                    logger.debug(
+                        "Removed quarantined stream %s from Dispatcharr channel %s",
+                        stream_id, session.channel_id,
+                    )
                 else:
-                    logger.warning(f"Channel {session.channel_id} not found, could not remove stream {stream_id}")
+                    logger.info(
+                        "Stream %s is already absent from Dispatcharr channel %s",
+                        stream_id, session.channel_id,
+                    )
 
             except Exception as e:
                 logger.error(f"Error handling Dispatcharr updates for quarantined stream {stream_id}: {e}", exc_info=True)
+                return False
          
         return True
 
@@ -1277,7 +1285,8 @@ class StreamSessionManager:
             stream_id: Stream ID
             
         Returns:
-            True if successful
+            True after Dispatcharr confirms the stream assignment. A failed
+            assignment restores quarantine and restarts its cooldown.
         """
         if session_id not in self.sessions:
             return False
@@ -1289,6 +1298,13 @@ class StreamSessionManager:
             if not stream_info:
                 return False
             if stream_info.status == 'quarantined':
+                previous_reason = stream_info.status_reason
+                previous_counters = (
+                    stream_info.low_speed_start_time,
+                    stream_info.failure_count,
+                    stream_info.consecutive_logo_misses,
+                    stream_info.loop_duration,
+                )
                 stream_info.status = 'review'
                 stream_info.last_status_change = time.time()
                 
@@ -1303,19 +1319,41 @@ class StreamSessionManager:
                 if session.quarantined_stream_ids and stream_id in session.quarantined_stream_ids:
                     session.quarantined_stream_ids.remove(stream_id)
                 
-                self._save_sessions()
-                logger.info(f"Revived stream {stream_id} in session {session_id} (moved to review)")
-                
                 # Add back to Dispatcharr channel
                 try:
-                    from apps.core.api_utils import add_streams_to_channel
-                    add_streams_to_channel(session.channel_id, [stream_id], allow_dead_streams=True)
-                    # Refresh UDI to reflect change
-                    udi = get_udi_manager()
-                    udi.refresh_channel_by_id(session.channel_id)
+                    from apps.core.api_utils import (
+                        _fetch_authoritative_channel_stream_ids,
+                        add_streams_to_channel,
+                    )
+                    added_count = add_streams_to_channel(
+                        session.channel_id, [stream_id], allow_dead_streams=True
+                    )
+                    if added_count == 0:
+                        assigned_ids = _fetch_authoritative_channel_stream_ids(session.channel_id)
+                        if assigned_ids is None or stream_id not in assigned_ids:
+                            raise RuntimeError(
+                                f"Could not confirm revived stream {stream_id} "
+                                f"in Dispatcharr channel {session.channel_id}"
+                            )
                 except Exception as e:
                     logger.error(f"Failed to restore stream {stream_id} to Dispatcharr: {e}")
-                
+                    stream_info.status = 'quarantined'
+                    stream_info.status_reason = previous_reason
+                    stream_info.last_status_change = time.time()
+                    (
+                        stream_info.low_speed_start_time,
+                        stream_info.failure_count,
+                        stream_info.consecutive_logo_misses,
+                        stream_info.loop_duration,
+                    ) = previous_counters
+                    if session.quarantined_stream_ids is None:
+                        session.quarantined_stream_ids = set()
+                    session.quarantined_stream_ids.add(stream_id)
+                    self._save_sessions()
+                    return False
+
+                self._save_sessions()
+                logger.info(f"Revived stream {stream_id} in session {session_id} (moved to review)")
                 return True
             else:
                 logger.debug(f"Stream {stream_id} is not quarantined (status: {stream_info.status})")
