@@ -138,8 +138,22 @@ def test_logo_allows_public_redirect_and_configured_dispatcharr_loopback(monkeyp
     monkeypatch.setattr(logo_cache.requests, "get", lambda url, **_kwargs: calls.append(url) or image)
     (tmp_path / "logos_cache" / "logo_7.png").unlink()
     calls.clear()
-    assert _status(_fetch(tmp_path, "http://127.0.0.1:9191/api/logos/7")) == 200
+    second = _fetch(tmp_path, "http://127.0.0.1:9191/api/logos/7")
+    assert _status(second) == 200
     assert calls == ["http://127.0.0.1:9191/api/logos/7"]
+    second.close()
+
+
+def test_logo_resolves_dispatcharr_relative_cache_url(monkeypatch, tmp_path):
+    upstream = FakeResponse(body=PNG, headers={"Content-Type": "image/png"})
+    calls = []
+    monkeypatch.setattr(logo_cache.requests, "get", lambda url, **_kwargs: calls.append(url) or upstream)
+
+    result = _fetch(tmp_path, "/api/logos/7/")
+
+    assert _status(result) == 200
+    assert calls == ["http://127.0.0.1:9191/api/logos/7/"]
+    result.close()
 
 
 def test_logo_blocks_unrelated_loopback_and_embedded_credentials(monkeypatch, tmp_path):
