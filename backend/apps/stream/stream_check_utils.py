@@ -2364,6 +2364,30 @@ def _probe_stream_for_loops(
         logger.error(f"[loop-probe:{stream_tag}] FFmpeg failed to start: {exc}")
         return False, None, 0
 
+    # FFmpeg can write more than a pipe buffer of warnings while producing
+    # frames. Drain stderr concurrently with stdout, before waiting for the
+    # process, or FFmpeg can block forever on a full stderr pipe. Keep a bounded
+    # prefix and tail for failure diagnostics, including early device errors.
+    stderr_prefix = bytearray()
+    stderr_tail = bytearray()
+
+    def _drain_stderr() -> None:
+        try:
+            while chunk := proc.stderr.read(4096):
+                if len(stderr_prefix) < 4096:
+                    stderr_prefix.extend(chunk[:4096 - len(stderr_prefix)])
+                stderr_tail.extend(chunk)
+                if len(stderr_tail) > 8192:
+                    del stderr_tail[:-8192]
+        except Exception as exc:
+            logger.debug("[loop-probe:%s] Could not drain FFmpeg stderr: %s", stream_tag, exc)
+
+    stderr_reader = threading.Thread(
+        target=_drain_stderr, daemon=True,
+        name=f"LoopProbe-Stderr[{stream_tag}]",
+    )
+    stderr_reader.start()
+
     detector      = SidecarLoopDetector(proc.stdout, stream_id=None)
     frames_done   = [0]
     loop_detected = False
@@ -2500,14 +2524,15 @@ def _probe_stream_for_loops(
 
     detector.is_closed = True
     reader.join(timeout=10)
+    stderr_reader.join(timeout=2)
 
     n = frames_done[0]
 
-    # Capture stderr for diagnostics on zero-frame failures
-    try:
-        stderr_out = proc.stderr.read().decode('utf-8', errors='replace').strip()
-    except Exception:
-        stderr_out = ''
+    stderr_bytes = (
+        bytes(stderr_prefix) + b'\n' + bytes(stderr_tail)
+        if len(stderr_prefix) == 4096 else bytes(stderr_tail)
+    )
+    stderr_out = stderr_bytes.decode('utf-8', errors='replace').strip()
 
     if n == 0 and fallback_cmd and _looks_like_hwaccel_failure(stderr_out):
         logger.warning(

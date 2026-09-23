@@ -13,6 +13,7 @@ import json
 import subprocess
 import sys
 import os
+import threading
 from time import monotonic as real_monotonic, sleep as real_sleep
 
 # Add backend to path
@@ -192,6 +193,43 @@ class TestLoopProbeSampling(unittest.TestCase):
         self.assertEqual(frames_processed, 0)
         self.assertTrue(process.terminated)
 
+    def test_loop_probe_drains_large_stderr_before_waiting(self):
+        """A noisy FFmpeg process must not stall behind its stderr pipe."""
+        drained = threading.Event()
+
+        class WarningPipe(io.BytesIO):
+            def read(self, size=-1):
+                chunk = super().read(size)
+                if not chunk:
+                    drained.set()
+                return chunk
+
+        class NoisyProcess:
+            def __init__(self):
+                self.stdout = io.BytesIO(b"")
+                self.stderr = WarningPipe(b"warning\n" * 200_000)
+                self.killed = False
+
+            def wait(self, timeout=None):
+                if not drained.wait(1):
+                    raise subprocess.TimeoutExpired(cmd="ffmpeg", timeout=timeout)
+                return 0
+
+            def kill(self):
+                self.killed = True
+
+        process = NoisyProcess()
+        with patch.object(stream_check_utils.subprocess, "Popen", return_value=process):
+            result = _probe_stream_for_loops(
+                url="http://example.invalid/noisy.ts",
+                stream_tag="test-stderr-drain",
+                probe_duration=60,
+            )
+
+        self.assertEqual(result, (False, None, 0))
+        self.assertTrue(drained.is_set())
+        self.assertFalse(process.killed)
+
     def test_loop_probe_latches_transient_loop_detection(self):
         raw_frames = [self._ppm_frame(frame_index) for frame_index in range(40)]
         pipe_bytes = b"".join(raw_frames)
@@ -329,6 +367,23 @@ class TestGetStreamBitrate(unittest.TestCase):
         self.assertIsNotNone(bitrate)
         self.assertEqual(bitrate, 3333.3)
         self.assertEqual(status, "OK")
+
+    @patch('subprocess.run')
+    def test_ffmpeg_812_progress_with_elapsed_keeps_bitrate(self, mock_run):
+        """FFmpeg 8.1.2 adds elapsed= after speed; bitrate still parses."""
+        mock_run.return_value = MagicMock(
+            stderr=(
+                'frame=   50 fps= 32 q=2.0 Lsize=     106KiB '
+                'time=00:00:01.96 bitrate= 441.2kbits/s speed=1.27x '
+                'elapsed=0:00:01.54\n'
+            ),
+            returncode=0,
+        )
+
+        bitrate, status, _ = get_stream_bitrate('http://test.stream', duration=2)
+
+        self.assertEqual(status, 'OK')
+        self.assertEqual(bitrate, 441.2)
     
     @patch('subprocess.run')
     def test_timeout_handling(self, mock_run):
