@@ -1,6 +1,7 @@
 import threading
 from unittest.mock import Mock, patch
 
+import pytest
 from sqlalchemy import event
 
 from apps.automation.automated_stream_manager import (
@@ -77,11 +78,11 @@ def test_matching_uses_one_dead_snapshot_and_preserves_revival(clean_test_db):
         assert allowed_assignments["101"] == [1, 2]
         assert len(queries) == 1
 
-        fallback_assignments, _ = manager._match_streams_batch(
-            streams[:2], {"101": set()}, True, {"101": False}
-        )
-        assert fallback_assignments["101"] == [2]
-        assert len(queries) == 3
+        with pytest.raises(RuntimeError, match="Dead stream snapshot unavailable"):
+            manager._match_streams_batch(
+                streams[:2], {"101": set()}, True, {"101": False}
+            )
+        assert len(queries) == 1
     finally:
         event.remove(clean_test_db, "before_cursor_execute", record)
 
@@ -131,11 +132,23 @@ def test_discovery_shares_one_dead_snapshot_with_matching_workers():
          patch("apps.stream.stream_session_manager.get_session_manager", return_value=session_manager), \
          patch("apps.automation.automated_stream_manager.assign_streams_to_channel") as assign:
         result = manager._discover_and_assign_streams_impl(force=True, skip_check_trigger=True)
+        assert result.get("success") is not False
+        assert result["assignment_count"] == {}
+        manager.dead_streams_tracker.get_dead_stream_reasons.assert_called_once_with()
+        manager.dead_streams_tracker.is_dead.assert_not_called()
+        assign.assert_not_called()
 
-    assert result.get("success") is not False
-    assert result["assignment_count"] == {}
-    manager.dead_streams_tracker.get_dead_stream_reasons.assert_called_once_with()
-    manager.dead_streams_tracker.is_dead.assert_not_called()
+        manager.dead_streams_tracker.get_dead_stream_reasons.side_effect = RuntimeError(
+            "injected database read failure"
+        )
+        with patch.object(manager, "_match_streams_batch", side_effect=AssertionError("worker started")) as worker:
+            failed = manager._discover_and_assign_streams_impl(force=True, skip_check_trigger=True)
+            worker.assert_not_called()
+
+    assert failed["success"] is False
+    assert "Dead stream state unavailable" in failed["error"]
+    assert failed["assignment_count"] == {}
+    assert failed["assigned_stream_ids"] == {}
     assign.assert_not_called()
 
 

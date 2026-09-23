@@ -3940,6 +3940,9 @@ class AutomatedStreamManager:
         channel_name_map = channel_name_map or {}
         match_stream_to_channels = self.regex_matcher.match_stream_to_channels
 
+        if dead_stream_removal_enabled and dead_stream_urls is None:
+            raise RuntimeError("Dead stream snapshot unavailable for matching")
+
         # Cache match outcomes for repeated stream signatures inside this batch.
         stream_match_cache: Dict[Tuple[str, Any, Optional[str]], Tuple[str, ...]] = {}
         
@@ -3977,14 +3980,9 @@ class AutomatedStreamManager:
                 continue
 
             # The shared snapshot avoids one SQLite session for every matched
-            # stream. If its initial read failed, preserve the prior per-URL
-            # behavior for this matching pass.
-            if dead_stream_removal_enabled and self.dead_streams_tracker:
-                is_dead = (
-                    stream_url in dead_stream_urls
-                    if dead_stream_urls is not None
-                    else self.dead_streams_tracker.is_dead(stream_url)
-                )
+            # stream and makes a failed dead-state read fatal to matching.
+            if dead_stream_removal_enabled:
+                is_dead = stream_url in dead_stream_urls
                 if is_dead and not any(
                     channel_to_revive_enabled.get(str(ch_id), False)
                     for ch_id in matching_channels
@@ -4621,14 +4619,32 @@ class AutomatedStreamManager:
                 dead_stream_removal_enabled = self._is_dead_stream_removal_enabled()
 
             dead_stream_urls = None
-            if dead_stream_removal_enabled and self.dead_streams_tracker:
+            if dead_stream_removal_enabled:
                 try:
+                    if self.dead_streams_tracker is None:
+                        raise RuntimeError("dead stream tracker unavailable")
                     dead_stream_urls = frozenset(self.dead_streams_tracker.get_dead_stream_reasons())
                 except Exception as snapshot_error:
-                    logger.warning(
-                        "Dead stream snapshot unavailable (%s); checking matched URLs individually",
+                    message = "Dead stream state unavailable; stream matching aborted"
+                    logger.error(
+                        "%s (%s)",
+                        message,
                         type(snapshot_error).__name__,
                     )
+                    self._update_run_progress(
+                        stage_key="stream_matching",
+                        current=0,
+                        total=total_streams,
+                        message=message,
+                    )
+                    return {
+                        "assignment_count": {},
+                        "assignment_details": [],
+                        "assigned_stream_ids": {},
+                        "channel_visibility_events": channel_visibility_events,
+                        "success": False,
+                        "error": message,
+                    }
             
             # Create batches
             batches = [all_streams[i:i + batch_size] for i in range(0, total_streams, batch_size)]
