@@ -1041,8 +1041,37 @@ class TestSingleStreamCheckService(unittest.TestCase):
         probe_kwargs = service._run_capacity_limited_stream_probes.call_args.kwargs
         self.assertTrue(probe_kwargs['blank_check_enabled'])
         self.assertTrue(probe_kwargs['freeze_check_enabled'])
+        self.assertTrue(probe_kwargs['defer_missing_bitrate_retry'])
+        self.assertTrue(probe_kwargs['retry_missing_bitrate'])
         service._run_loop_probes.assert_called_once()
         service._update_stream_stats.assert_called_once()
+
+    @patch('apps.stream.stream_checker_service.get_udi_manager')
+    def test_check_single_stream_passes_disabled_bitrate_retry_to_probe(self, mock_get_udi):
+        from apps.stream.stream_checker_service import StreamCheckerService
+
+        service, mock_udi = self._build_service()
+        mock_get_udi.return_value = mock_udi
+        original_get = service.config.get.side_effect
+        service.config.get.side_effect = lambda key, default=None: (
+            False if key == 'stream_analysis.bitrate_recheck_enabled'
+            else original_get(key, default)
+        )
+        service._run_capacity_limited_stream_probes.return_value = [{
+            'stream_id': 456,
+            'status': 'OK',
+            'bitrate_kbps': None,
+            'measurement_incomplete': True,
+            'measurement_incomplete_reason': 'missing_bitrate',
+            'bitrate_recheck_required': True,
+        }]
+
+        result = StreamCheckerService.check_single_stream(service, 456, persist=False)
+
+        self.assertTrue(result['success'])
+        probe_kwargs = service._run_capacity_limited_stream_probes.call_args.kwargs
+        self.assertFalse(probe_kwargs['defer_missing_bitrate_retry'])
+        self.assertFalse(probe_kwargs['retry_missing_bitrate'])
 
     @patch('apps.stream.stream_checker_service.get_udi_manager')
     def test_check_single_stream_recovers_bitrate_via_capacity_limited_recheck(self, mock_get_udi):

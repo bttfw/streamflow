@@ -4686,6 +4686,7 @@ class StreamCheckerService:
                 _hb_thread = threading.Thread(target=_heartbeat, daemon=True, name='stream-checker-heartbeat')
                 _hb_thread.start()
 
+                bitrate_recheck_enabled = self._is_bitrate_recheck_enabled()
                 try:
                     # Check streams in parallel with account-aware limits
                     results = smart_scheduler.check_streams_with_limits(
@@ -4713,7 +4714,8 @@ class StreamCheckerService:
                         freeze_check_noise_threshold=analysis_params.get('freeze_check_noise_threshold', 0.001),
                         freeze_check_ratio_threshold=analysis_params.get('freeze_check_ratio_threshold', 0.80),
                         hardware_acceleration=analysis_params.get('hardware_acceleration'),
-                        defer_missing_bitrate_retry=self._is_bitrate_recheck_enabled(),
+                        defer_missing_bitrate_retry=bitrate_recheck_enabled,
+                        retry_missing_bitrate=bitrate_recheck_enabled,
                     )
                 finally:
                     _heartbeat_stop.set()
@@ -6260,6 +6262,7 @@ class StreamCheckerService:
                 if udi:
                     stream_url = udi.apply_profile_url_transformation(stream)
                 
+                bitrate_recheck_enabled = self._is_bitrate_recheck_enabled()
                 analyzed = analyze_stream(
                     stream_url=stream_url,
                     stream_id=stream['id'],
@@ -6279,7 +6282,8 @@ class StreamCheckerService:
                     freeze_check_noise_threshold=analysis_params.get('freeze_check_noise_threshold', 0.001),
                     freeze_check_ratio_threshold=analysis_params.get('freeze_check_ratio_threshold', 0.80),
                     hardware_acceleration=analysis_params.get('hardware_acceleration'),
-                    defer_missing_bitrate_retry=self._is_bitrate_recheck_enabled(),
+                    defer_missing_bitrate_retry=bitrate_recheck_enabled,
+                    retry_missing_bitrate=bitrate_recheck_enabled,
                 )
 
                 def recheck_sequential_bitrate(_stream, _initial):
@@ -10598,6 +10602,7 @@ class StreamCheckerService:
                 bool(loop_check_enabled),
             )
 
+            bitrate_recheck_enabled = self._is_bitrate_recheck_enabled()
             initial_results = self._run_capacity_limited_stream_probes(
                 [stream_data],
                 udi=udi,
@@ -10616,7 +10621,8 @@ class StreamCheckerService:
                 freeze_check_noise_threshold=analysis_params.get('freeze_check_noise_threshold', 0.001),
                 freeze_check_ratio_threshold=analysis_params.get('freeze_check_ratio_threshold', 0.80),
                 hardware_acceleration=analysis_params.get('hardware_acceleration'),
-                defer_missing_bitrate_retry=self._is_bitrate_recheck_enabled(),
+                defer_missing_bitrate_retry=bitrate_recheck_enabled,
+                retry_missing_bitrate=bitrate_recheck_enabled,
             )
 
             if self.abort_current_check.is_set():

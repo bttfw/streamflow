@@ -2827,6 +2827,7 @@ def analyze_stream(
     hardware_acceleration: Optional[Dict[str, Any]] = None,
     preempt_check: Optional[Callable[[], bool]] = None,
     defer_missing_bitrate_retry: bool = False,
+    retry_missing_bitrate: bool = True,
 ) -> Dict[str, Any]:
     """
     Perform complete stream analysis including codec, resolution, FPS, bitrate, and audio.
@@ -2859,6 +2860,8 @@ def analyze_stream(
         defer_missing_bitrate_retry: Return a completed missing-bitrate result after
             the first successful basis probe so the caller can retry it later without
             competing with the initial parallel channel scan.
+        retry_missing_bitrate: Whether a completed OK probe without bitrate may
+            trigger a bitrate-only retry. Error and early-exit retries are separate.
 
     Returns:
         Dictionary containing analysis results with keys:
@@ -3142,6 +3145,12 @@ def analyze_stream(
                     elapsed  = result_data.get('elapsed_time', ffmpeg_duration)
                     completed = elapsed >= ffmpeg_duration * EARLY_EXIT_THRESHOLD
                     missing_bitrate = result.get('bitrate_kbps') is None
+                    if completed and missing_bitrate and not retry_missing_bitrate:
+                        logger.info(
+                            f"  {stream_audit_ref}: completed probe without bitrate; "
+                            "bitrate-only retry disabled"
+                        )
+                        break
                     if completed and missing_bitrate and defer_missing_bitrate_retry:
                         logger.warning(
                             f"  {stream_audit_ref}: completed probe without bitrate "
