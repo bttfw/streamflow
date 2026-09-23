@@ -1,4 +1,4 @@
-import { useState, useEffect, useRef } from 'react';
+import { lazy, Suspense, useState, useEffect, useRef } from 'react';
 import { Play, Square, Trash2, Plus, Activity, AlertCircle, LayoutGrid, List, MoreVertical } from 'lucide-react';
 import { Button } from '@/components/ui/button';
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card';
@@ -9,7 +9,8 @@ import { AlertDialog, AlertDialogAction, AlertDialogCancel, AlertDialogContent, 
 import { useToast } from '@/hooks/use-toast';
 import { streamSessionsAPI } from '@/services/streamSessions';
 import CreateSessionDialog from '@/components/stream-monitoring/CreateSessionDialog';
-import SessionMonitorView from '@/components/stream-monitoring/SessionMonitorView';
+
+const SessionMonitorView = lazy(() => import('@/components/stream-monitoring/SessionMonitorView'));
 
 function StreamMonitoring() {
   const [sessions, setSessions] = useState([]);
@@ -290,11 +291,13 @@ function StreamMonitoring() {
     <>
       {/* If viewing a specific session, show the monitor view */}
       {selectedSession ? (
-        <SessionMonitorView
-          sessionId={selectedSession?.session_id}
-          onBack={handleBackToList}
-          onStop={() => handleStopSession(selectedSession)}
-        />
+        <Suspense fallback={<div className="flex min-h-64 items-center justify-center text-sm text-muted-foreground" role="status">Loading session details...</div>}>
+          <SessionMonitorView
+            sessionId={selectedSession?.session_id}
+            onBack={handleBackToList}
+            onStop={() => handleStopSession(selectedSession)}
+          />
+        </Suspense>
       ) : (
         <div className="space-y-6 relative pb-20">
           {/* Header */}
