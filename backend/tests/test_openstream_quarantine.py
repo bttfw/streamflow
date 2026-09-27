@@ -127,3 +127,40 @@ class TestOpenStreamQuarantine(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class TestOpenStreamRefusedKeyIsNotATimeout(TestOpenStreamQuarantine):
+    """A monitor whose requests OpenStream refuses (no/wrong API key) or that
+    cannot reach the server keeps reporting, so the service must not restart it
+    as timed out. Restarting removes the stream from OpenStream and re-admits
+    it, every evaluation."""
+
+    def _evaluate_with_poll_result(self, **patch_kwargs):
+        import apps.stream.openstream_monitor as om
+        session = SessionInfo(session_id='sess1', channel_id=1, channel_name='c', regex_filter='x',
+                              created_at=time.time(), is_active=True, streams={}, session_type='openstream')
+        stream = StreamInfo(url='http://os:6878/ace/getstream?id=' + 'a' * 40, name='s',
+                            stream_id=101, channel_id=1)
+        session.streams = {101: stream}
+        self.service.session_manager.get_session.return_value = session
+        post = MagicMock()
+        with patch.object(om.requests, 'get', **patch_kwargs), patch.object(om.requests, 'post', post):
+            monitor = om.OpenStreamStreamMonitor(url=stream.url, stream_id=101)
+            monitor._poll_once()
+            self.service.monitors = {'sess1': {101: monitor}}
+            self.service._evaluate_session_streams('sess1')
+        return stream, post
+
+    def test_refused_key_survives_evaluation(self):
+        resp = MagicMock(status_code=403)
+        stream, post = self._evaluate_with_poll_result(return_value=resp)
+        self.assertIn(101, self.service.monitors['sess1'])
+        self.assertNotEqual(stream.status_reason, 'timeout-restart')
+        post.assert_not_called()
+
+    def test_unreachable_server_survives_evaluation(self):
+        import requests
+        stream, post = self._evaluate_with_poll_result(side_effect=requests.ConnectionError())
+        self.assertIn(101, self.service.monitors['sess1'])
+        self.assertNotEqual(stream.status_reason, 'timeout-restart')
+        post.assert_not_called()

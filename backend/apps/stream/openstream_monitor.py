@@ -220,6 +220,14 @@ class OpenStreamStreamMonitor:
             self._stop.wait(self.poll_interval)
 
     def _poll_once(self):
+        # Every completed poll counts as an update, including a handled failure
+        # (server unreachable, key refused). The service restarts a monitor whose
+        # last_updated is older than the session timeout, and a restart here
+        # cannot help: it removes the stream from OpenStream and re-admits it.
+        # Worse, last_updated starts at 0, so a server that never answered
+        # tripped the timeout on the first evaluation and restarted every
+        # monitor each cycle. The timeout should catch a dead poll thread only.
+        self.stats.last_updated = time.time()
         try:
             resp = requests.get(
                 f"{self.base}/api/streams/{self.content_id}",
