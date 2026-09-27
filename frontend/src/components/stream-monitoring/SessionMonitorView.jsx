@@ -823,8 +823,8 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
           <TableRow>
             <TableHead className="w-12">#</TableHead>
             <TableHead>Name</TableHead>
-            {!isOpenStream && <TableHead>Quality</TableHead>}
-            {!isOpenStream && <TableHead>FPS</TableHead>}
+            <TableHead>Quality</TableHead>
+            <TableHead>FPS</TableHead>
             <TableHead>{isOpenStream ? 'Keep-up' : 'Speed'}</TableHead>
             {isOpenStream ? (
               <>
@@ -896,21 +896,17 @@ function StreamsTable({ streams, isOpenStream = false, sessionId, onQuarantine, 
                     </div>
                   )}
                 </TableCell>
-                {!isOpenStream && (
-                  <TableCell>
-                    <div className="flex items-center gap-2">
-                      <span>{formatQuality(stream)}</span>
-                      {stream.hdr_format && (
-                        <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-xs px-2 py-0 h-5">
-                          {stream.hdr_format}
-                        </Badge>
-                      )}
-                    </div>
-                  </TableCell>
-                )}
-                {!isOpenStream && (
-                  <TableCell>{stream.fps ? `${stream.fps.toFixed(0)} fps` : 'N/A'}</TableCell>
-                )}
+                <TableCell>
+                  <div className="flex items-center gap-2">
+                    <span>{formatQuality(stream)}</span>
+                    {stream.hdr_format && (
+                      <Badge variant="outline" className="bg-blue-500/10 text-blue-500 border-blue-500/20 text-xs px-2 py-0 h-5">
+                        {stream.hdr_format}
+                      </Badge>
+                    )}
+                  </div>
+                </TableCell>
+                <TableCell>{stream.fps ? `${Number.isInteger(stream.fps) ? stream.fps : stream.fps.toFixed(2)} fps` : 'N/A'}</TableCell>
                 <TableCell>
                   {(() => {
                     const margin = isOpenStream

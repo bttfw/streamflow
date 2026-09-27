@@ -7,11 +7,10 @@ import pytest
 import requests
 
 from apps.config import openstream_config as cfg_module
-from apps.stream import openstream_monitor as mon_module
-from apps.stream.openstream_monitor import OpenStreamStreamMonitor
 
 CID = "aabbccddeeff00112233445566778899aabbccdd"
 URL = f"http://os:6878/ace/getstream?id={CID}"
+# Monitor-side auth handling is covered in test_openstream_hub.py.
 
 
 def _resp(status, body=None):
@@ -43,49 +42,6 @@ def test_stored_key_round_trip_and_env_override(monkeypatch, tmp_path):
     monkeypatch.delenv("OPENSTREAM_API_KEY_FILE")
     config.update_config(api_key="")  # clear
     assert config.get_api_key() is None
-
-
-def test_monitor_sends_key_on_every_call(monkeypatch):
-    cfg_module.get_openstream_config().update_config(api_key="secret")
-    get = Mock(return_value=_resp(200, {"health": {"state": "healthy", "keepUpMargin": 1.0}}))
-    post = Mock(return_value=_resp(200))
-    monkeypatch.setattr(mon_module.requests, "get", get)
-    monkeypatch.setattr(mon_module.requests, "post", post)
-
-    m = OpenStreamStreamMonitor(url=URL, stream_id=1)
-    m._admit()
-    m._poll_once()
-    m._remove()
-
-    assert get.call_args.kwargs["headers"] == {"X-API-Key": "secret"}
-    for call in post.call_args_list:
-        assert call.kwargs["headers"] == {"X-API-Key": "secret"}
-    assert m.stats.is_alive and not m.is_buffering()
-
-
-@pytest.mark.parametrize("status,needle", [(401, "rejected"), (403, "requires an API key"), (428, "first-run setup")])
-def test_refused_key_is_reported_but_not_fatal(monkeypatch, status, needle):
-    monkeypatch.setattr(mon_module.requests, "get", Mock(return_value=_resp(status, {"error": "x"})))
-    m = OpenStreamStreamMonitor(url=URL, stream_id=1)
-    m._poll_once()
-    assert m.stats.is_alive is True
-    assert m.stats.is_fatal is False
-    assert m.is_buffering() is True
-    assert needle in m.stats.error_message
-    assert m.get_transport_health()["status"] != "dead"
-
-
-def test_recovers_once_key_is_accepted(monkeypatch):
-    get = Mock(return_value=_resp(403))
-    monkeypatch.setattr(mon_module.requests, "get", get)
-    m = OpenStreamStreamMonitor(url=URL, stream_id=1)
-    m._poll_once()
-    assert m.stats.error_message
-
-    get.return_value = _resp(200, {"health": {"state": "healthy", "keepUpMargin": 1.0}})
-    m._poll_once()
-    assert m.stats.error_message is None
-    assert m.is_buffering() is False
 
 
 def test_test_connection_endpoint(monkeypatch):

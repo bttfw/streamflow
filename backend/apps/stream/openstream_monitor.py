@@ -38,30 +38,50 @@ on the stream (``error_message``) but, like an unreachable server, it is
 never fatal: a missing key must not evict every source.
 """
 
-import logging
 import re
-import threading
 import time
+from collections import deque
 from typing import Callable, Optional, Tuple
 from urllib.parse import urlsplit, parse_qs
 
-import requests
-
-from apps.config.openstream_config import openstream_headers
 from apps.core.logging_config import setup_logging
+from apps.stream.openstream_hub import get_hub
 from apps.stream.ffmpeg_stream_monitor import FFmpegStats
 
 logger = setup_logging(__name__)
 
 _CID_RE = re.compile(r"[0-9a-fA-F]{40}")
 
-# How often to poll the OpenStream health API. The server recomputes health ~1 Hz;
-# a 2 s client poll is light (a handful of tiny GETs per session) and responsive.
-DEFAULT_POLL_INTERVAL = 2.0
-_HTTP_TIMEOUT = 5.0
 
 # health.state values that mean "connected but not cleanly keeping up".
 _BUFFERING_STATES = {"warming", "draining", "stalled"}
+
+# Ranking. A source's score is the share of the live stream it actually
+# received over the last RANK_WINDOW_SECS: the mean of min(1, kbps / true
+# edge bitrate), x100. Delivery is the causal quantity: below the source's own
+# rate the viewer's buffer drains. Chosen against what a viewer of each pull
+# saw (playsim; 2/5/10 s player caches) in two 80-min runs on 25 different live
+# sources during live events, picked on run 1 and checked on run 2:
+#   agreement with which source stalls next (pooled, 5 s cache, 5 min ahead)
+#     this score 0.84 · healthy-poll window used before 0.69 · OpenStream's
+#     reliabilityScore 0.69; best of the 7 candidates in all 6 cache/horizon
+#     conditions
+#   viewer stall through Streamflow's ordering and 10-point switch hysteresis
+#     run 1: 0.00 min/h, 0 switches (before: 15.1 min/h) · run 2: 0.07 min/h
+#   score >= 70 (pass review) -> stall-free for the next 5 min: 87% / 91% of
+#     the time (base rates 66% / 90%)
+# The healthy-poll window failed because a source that stalls briefly and
+# often reads healthy most of the time: one read healthy in 77% of polls and
+# stalled a viewer 137 times.
+RANK_WINDOW_SECS = 300.0
+
+# "dead" is only fatal once it lasts this long. Dead sources come back: in the
+# same runs 59 of 59 dead episodes recovered, the slowest after 182 s (5 of
+# them under OpenStream's current 20-s-without-life rule, up to 176 s).
+# Quarantine (15 min, removed from the Dispatcharr channel) for a blip costs a
+# good source mid-event, while a dead source already scores 0 (it delivers
+# nothing) and drops in rank at once without being evicted.
+DEAD_FATAL_SECS = 300.0
 
 # OpenStream's answers when the control plane refuses a request: 401 = the API
 # key is wrong or revoked, 403 = no key was sent, 428 = OpenStream has no
@@ -106,27 +126,33 @@ def parse_openstream_url(url: str) -> Tuple[Optional[str], Optional[str]]:
 
 
 class OpenStreamStreamMonitor:
-    """Polls an OpenStream server for one source's health. See module docstring."""
+    """One source's health, fed by its server's shared hub (openstream_hub).
+    See module docstring."""
 
     def __init__(
         self,
         url: str,
         stream_id: Optional[int] = None,
         on_stats_update: Optional[Callable[[FFmpegStats], None]] = None,
-        poll_interval: float = DEFAULT_POLL_INTERVAL,
+        owner: str = "streamflow",
     ):
         self.url = url
         self.stream_id = stream_id
         self.on_stats_update = on_stats_update
-        self.poll_interval = poll_interval
+        # Lease owner on the OpenStream server. One per Streamflow session, so
+        # two sessions sharing a source hold separate claims and stopping one
+        # never takes the source from the other.
+        self.owner = owner
         self.stats = FFmpegStats(url=url)
         self.base, self.content_id = parse_openstream_url(url)
-        self._thread: Optional[threading.Thread] = None
-        self._stop = threading.Event()
+        self.stopped = False
+        self._hub = None
         self._buffering = False
         self._state = "warming"
         self._error_density = 0.0
         self._auth_error: Optional[int] = None  # last refusal status, to log once
+        self._delivery = deque()  # (t, min(1, kbps / true bitrate)) over RANK_WINDOW_SECS
+        self._dead_since: Optional[float] = None
         # No UDP sidecar pipes (screenshots/CV don't apply to health monitoring);
         # present as attributes so any incidental access stays safe.
         self.port_a = None
@@ -135,33 +161,31 @@ class OpenStreamStreamMonitor:
     # ---- lifecycle (mirrors FFmpegStreamMonitor) ----
 
     def start(self) -> bool:
+        """Registers with the server's hub. Never blocks on the network: the
+        lease and the first poll happen on the hub's thread, so a slow or
+        unreachable server cannot stall Streamflow's monitoring loop."""
         if not self.base or not self.content_id:
             self.stats.is_alive = False
             self.stats.error_message = "Not an OpenStream/AceStream URL (no content id)"
             return False
-        self._admit()
-        self._stop.clear()
-        self._thread = threading.Thread(
-            target=self._poll_loop, name=f"os-mon-{self.stream_id}", daemon=True
-        )
-        self._thread.start()
+        self.stopped = False
+        self.stats.is_alive = True
+        self.stats.last_updated = time.time()
+        self._hub = get_hub(self.base)
+        self._hub.register(self)
         return True
 
     def stop(self):
-        self._stop.set()
-        t = self._thread
-        # stop() may be invoked from inside the poll thread itself (the monitoring
-        # service calls monitor.stop() from the on_stats_update callback when a
-        # source goes dead). Never join our own thread — setting the event above is
-        # enough; the loop exits on its next check.
-        if t and t.is_alive() and t is not threading.current_thread():
-            t.join(timeout=self.poll_interval + 1.0)
-        # Best-effort: release the warm session so an unwatched source is not
-        # pulled forever. Harmless if another session still wants it (re-admitted).
-        self._remove()
+        # Safe from inside the hub thread (the service stops a dead source from
+        # the stats callback): unregistering only queues the lease release.
+        if self.stopped:
+            return
+        self.stopped = True
+        if self._hub is not None:
+            self._hub.unregister(self)
 
     def is_running(self) -> bool:
-        return self._thread is not None and self._thread.is_alive()
+        return not self.stopped and self._hub is not None and self._hub.is_running()
 
     def is_alive(self) -> bool:
         return bool(self.stats.is_alive)
@@ -183,86 +207,43 @@ class OpenStreamStreamMonitor:
         summary = f"openstream:{self._state} · {seeders}/{peers} seeders/peers"
         return {"status": status, "summary": summary, "error_density": self._error_density}
 
-    # ---- OpenStream API ----
+    def rank_score(self) -> Optional[float]:
+        """0-100 ranking score (see RANK_WINDOW_SECS), or None before any
+        sample (the service then keeps its neutral starting score)."""
+        if not self._delivery:
+            return None
+        return 100.0 * sum(v for _, v in self._delivery) / len(self._delivery)
 
-    def _admit(self):
-        try:
-            requests.post(
-                f"{self.base}/api/streams",
-                json={"ids": [self.content_id]},
-                headers=openstream_headers(),
-                timeout=_HTTP_TIMEOUT,
-            )
-        except requests.RequestException as e:
-            logger.debug("OpenStream admit failed for %s: %s", self.content_id, e)
+    def _note_delivery(self, now: float, value: float):
+        self._delivery.append((now, value))
+        while self._delivery and self._delivery[0][0] < now - RANK_WINDOW_SECS:
+            self._delivery.popleft()
 
-    def _remove(self):
-        if not self.base or not self.content_id:
-            return
-        try:
-            requests.post(
-                f"{self.base}/api/actions",
-                json={"op": "remove", "ids": [self.content_id]},
-                headers=openstream_headers(),
-                timeout=_HTTP_TIMEOUT,
-            )
-        except requests.RequestException:
-            pass
+    def _notify(self):
+        if self.on_stats_update and not self.stopped:
+            try:
+                self.on_stats_update(self.stats)
+            except Exception:  # never let a callback break the hub
+                logger.exception("on_stats_update raised for stream %s", self.stream_id)
 
-    def _poll_loop(self):
-        while not self._stop.is_set():
-            self._poll_once()
-            if self.on_stats_update:
-                try:
-                    self.on_stats_update(self.stats)
-                except Exception:  # never let a callback kill the poll loop
-                    logger.exception("on_stats_update raised for stream %s", self.stream_id)
-            self._stop.wait(self.poll_interval)
+    # ---- applied by the hub, once per poll ----
+    #
+    # Every applied result, success or handled failure, refreshes
+    # last_updated: the service restarts a monitor whose last_updated is older
+    # than the session timeout, and a restart cannot fix an unreachable server
+    # or a refused key. The timeout is for a hub that stopped polling.
 
-    def _poll_once(self):
-        # Every completed poll counts as an update, including a handled failure
-        # (server unreachable, key refused). The service restarts a monitor whose
-        # last_updated is older than the session timeout, and a restart here
-        # cannot help: it removes the stream from OpenStream and re-admits it.
-        # Worse, last_updated starts at 0, so a server that never answered
-        # tripped the timeout on the first evaluation and restarted every
-        # monitor each cycle. The timeout should catch a dead poll thread only.
-        self.stats.last_updated = time.time()
-        try:
-            resp = requests.get(
-                f"{self.base}/api/streams/{self.content_id}",
-                headers=openstream_headers(),
-                timeout=_HTTP_TIMEOUT,
-            )
-        except requests.RequestException as e:
-            # Transient: the server is unreachable. Report buffering (unknown), never
-            # fatal — a down server must not mark every source dead.
-            self._buffering = True
-            self.stats.speed = 0.0
-            self.stats.is_alive = True
-            self.stats.error_message = None
-            logger.debug("OpenStream poll failed for %s: %s", self.content_id, e)
-            return
-        if resp.status_code in _AUTH_ERRORS:
-            self._apply_auth_error(resp.status_code)
-            return
-        if self._auth_error is not None:
-            logger.info("OpenStream at %s accepted the API key again", self.base)
-            self._auth_error = None
-            self.stats.error_message = None
-        if resp.status_code == 404:
-            # Not admitted (or reaped) — re-admit and treat as warming.
-            self._admit()
-            self._apply_warming()
-            return
-        try:
-            snap = resp.json()
-        except ValueError:
-            self._buffering = True
-            return
-        self._apply_snapshot(snap if isinstance(snap, dict) else {})
+    def _apply_unreachable(self, now: Optional[float] = None):
+        """Server unreachable or answered garbage: unknown health, never fatal
+        (a down OpenStream server must not evict every source)."""
+        self.stats.last_updated = now if now is not None else time.time()
+        self._buffering = True
+        self.stats.speed = 0.0
+        self.stats.is_alive = True
+        self.stats.is_fatal = False
+        self.stats.error_message = None
 
-    def _apply_auth_error(self, status: int):
+    def _apply_auth_error(self, status: int, now: Optional[float] = None):
         """OpenStream refused the request. Like an unreachable server this is
         unknown health, not a dead source: report it and keep polling, so the
         stream recovers on its own once the key is fixed."""
@@ -271,6 +252,7 @@ class OpenStreamStreamMonitor:
             logger.warning("OpenStream at %s refused stream %s (HTTP %s): %s",
                            self.base, self.content_id, status, message)
             self._auth_error = status
+        self.stats.last_updated = now if now is not None else time.time()
         self._buffering = True
         self.stats.speed = 0.0
         self.stats.is_alive = True
@@ -279,47 +261,95 @@ class OpenStreamStreamMonitor:
 
     def _apply_swarm_telemetry(self, snap: dict, health: dict):
         """Copy the swarm signals (peers/seeders/download/score/latency) that have
-        no ffmpeg equivalent onto stats, so the API and UI can show them."""
+        no ffmpeg equivalent onto stats, so the API and UI can show them, and
+        the source's video format from OpenStream's one-time media probe."""
         self.stats.peers = _as_int(snap.get("peers"))
         self.stats.seeders = _as_int(snap.get("seeders"))
         self.stats.download_kbps = _as_float(snap.get("kbps"))
         self.stats.swarm_state = self._state
+        # Resolution and frame rate feed Streamflow's ranking tie-break and the
+        # stats it syncs to Dispatcharr; without them every OpenStream source
+        # read 0x0 at 0 fps. OpenStream's fps is the real frame rate (field-coded
+        # interlace counted as frames), matching ffprobe's avg_frame_rate.
+        media = snap.get("media") if isinstance(snap.get("media"), dict) else {}
+        if _as_int(media.get("width")) > 0 and _as_int(media.get("height")) > 0:
+            self.stats.width = _as_int(media.get("width"))
+            self.stats.height = _as_int(media.get("height"))
+        if _as_float(media.get("fps")) > 0:
+            self.stats.fps = _as_float(media.get("fps"))
+        if not health and _as_float(media.get("bitrateKbps")) > 0:
+            self.stats.bitrate = _as_float(media.get("bitrateKbps"))
         if health:
             self.stats.reliability_score = _as_float(health.get("reliabilityScore"))
             self.stats.keepup_margin = _as_float(health.get("keepUpMargin"))
+        # Delay behind live: behindLiveSecs (media seconds per piece, validated
+        # against the player-side delay) over health.latencySecs (pieces over
+        # the edge's wall rate, whole seconds, 0 while the edge is frozen).
+        # They agree within 0.7 s median when steady and diverge by up to 46 s
+        # while warming or stalled (2,433 live samples).
+        behind = snap.get("behindLiveSecs")
+        if isinstance(behind, (int, float)) and behind >= 0:
+            self.stats.latency_secs = int(round(behind))
+        elif health:
             self.stats.latency_secs = _as_int(health.get("latencySecs"))
 
-    def _apply_warming(self, snap: Optional[dict] = None):
+    def _apply_warming(self, snap: Optional[dict] = None, now: Optional[float] = None):
+        self._clear_auth_error()
+        self._dead_since = None
         self._state = "warming"
         self._buffering = True
         self.stats.is_alive = True
         self.stats.speed = 0.0
-        self.stats.last_updated = time.time()
+        self.stats.last_updated = now if now is not None else time.time()
         self._apply_swarm_telemetry(snap or {}, {})
 
-    def _apply_snapshot(self, snap: dict):
-        logger.debug("OpenStream snapshot for %s: %s", self.content_id, snap)
+    def _clear_auth_error(self):
+        if self._auth_error is not None:
+            logger.info("OpenStream at %s accepted the API key again", self.base)
+            self._auth_error = None
+            self.stats.error_message = None
+
+    def _apply_snapshot(self, snap: dict, now: Optional[float] = None):
+        self._clear_auth_error()
         health = snap.get("health") if isinstance(snap.get("health"), dict) else None
         if not health:
             # Session exists but no health yet (just started) -> warming. Peers and
             # download rate are already meaningful, so keep them.
-            self._apply_warming(snap)
+            self._apply_warming(snap, now)
             return
         state = str(health.get("state") or "warming")
         margin = _as_float(health.get("keepUpMargin"))
         true_bitrate = _as_float(health.get("trueBitrateKbps"))
+        now = now if now is not None else time.time()
+        kbps = _as_float(snap.get("kbps"))
+        # Warming snapshots never reach here (no health yet), so the window
+        # holds only measured seconds. A frozen edge (true bitrate 0) is a
+        # second of nothing delivered.
+        self._note_delivery(now, min(1.0, kbps / true_bitrate) if true_bitrate > 0 else 0.0)
         self._state = state
         self._error_density = max(0.0, min(1.0, 1.0 - margin))
-        self.stats.last_updated = time.time()
+        self.stats.last_updated = now if now is not None else time.time()
         self.stats.bitrate = true_bitrate
         self._apply_swarm_telemetry(snap, health)
 
         if state == "dead":
-            self.stats.is_alive = False
-            self.stats.is_fatal = True
-            self.stats.error_message = "OpenStream: no live source (dead)"
-            self._buffering = False
+            if self._dead_since is None:
+                self._dead_since = now
+            dead_for = now - self._dead_since
+            if dead_for >= DEAD_FATAL_SECS:
+                self.stats.is_alive = False
+                self.stats.is_fatal = True
+                self.stats.error_message = f"OpenStream: no live source for {dead_for:.0f}s (dead)"
+                self._buffering = False
+                return
+            # Not yet fatal: report it and let the score (no delivery) rank it down.
+            self.stats.is_alive = True
+            self.stats.is_fatal = False
+            self.stats.error_message = None
+            self.stats.speed = 0.0
+            self._buffering = True
             return
+        self._dead_since = None
 
         self.stats.is_alive = True
         self.stats.is_fatal = False

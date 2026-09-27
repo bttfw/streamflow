@@ -613,12 +613,16 @@ class StreamMonitoringService:
             if not has_monitor:
                 on_update = lambda stats, sid=session_id, stid=stream_id: \
                     self._on_stats_update(sid, stid, stats)
-                if getattr(session, 'session_type', 'ffmpeg') == 'openstream':
+                is_openstream = getattr(session, 'session_type', 'ffmpeg') == 'openstream'
+                if is_openstream:
                     # Swarm health from an OpenStream server instead of a local
                     # ffmpeg probe; duck-types FFmpegStreamMonitor so the rest of
                     # the pipeline (reliability, ranking, Dispatcharr) is unchanged.
+                    # The lease owner is per session, so two sessions sharing a
+                    # source hold separate claims on it.
                     monitor = OpenStreamStreamMonitor(
-                        url=stream_info.url, stream_id=stream_id, on_stats_update=on_update
+                        url=stream_info.url, stream_id=stream_id, on_stats_update=on_update,
+                        owner=f"streamflow/{session_id}",
                     )
                 else:
                     monitor = FFmpegStreamMonitor(
@@ -631,8 +635,14 @@ class StreamMonitoringService:
                     # Initialize last_screenshot_time to current time to stagger first attempts
                     stream_info.last_screenshot_time = time.time()
                     logger.debug(f"Started primary monitor for stream {stream_id} in session {session_id}")
-                    
-                    time.sleep(session.stagger_ms / 1000.0)
+
+                    # The stagger spreads ffmpeg process launches. An OpenStream
+                    # monitor launches nothing (it joins its server's shared
+                    # poller), and this sleep runs inside the one loop that
+                    # evaluates every session: 100 sources x 1 s default froze
+                    # all ranking for ~100 s at startup.
+                    if not is_openstream:
+                        time.sleep(session.stagger_ms / 1000.0)
                 else:
                     logger.error(f"Failed to start monitor for stream {stream_id} in session {session_id}")
                     # Monitor failed to start (e.g. invalid URL), quarantine immediately
@@ -851,6 +861,12 @@ class StreamMonitoringService:
                 is_healthy = stats.is_alive and not monitor.is_buffering()
                 scoring_window.add_measurement(is_healthy, stats.speed)
                 next_score = scoring_window.get_score()
+                # OpenStream sources rank by delivered share of the live
+                # stream (OpenStreamStreamMonitor.rank_score): it predicted
+                # viewer stalls far better than the healthy-poll window.
+                if is_openstream and hasattr(monitor, 'rank_score'):
+                    os_score = monitor.rank_score()
+                    next_score = os_score if os_score is not None else next_score
                 if isinstance(next_score, (int, float)):
                     current_score = next_score
                 

@@ -120,50 +120,96 @@ The system is optimized for high-performance monitoring:
 
 ## 8. Session Types: FFmpeg vs OpenStream
 A monitoring session has a **backend** (`session_type`) that decides how each stream's
-reliability is measured. Both feed the *same* Capped Sliding Window, ranking and
-Dispatcharr reordering — only the measurement source differs.
+reliability is measured. Both feed the same lifecycle, ranking and Dispatcharr
+reordering. ffmpeg sources are scored by the Capped Sliding Window, OpenStream sources
+by delivered share (below).
 
 | | `ffmpeg` (default) | `openstream` |
 |---|---|---|
 | Source of truth | A local ffmpeg process decoding each stream | An [OpenStream](https://github.com/krinkuto11/openstream) server's swarm-health API |
-| Measures | speed, bitrate, FPS, buffering; loop + logo CV | keep-up margin, reliability score, download rate, peers/seeders, latency |
-| Cost | One ffmpeg + CV sidecars **per stream** | A few small HTTP polls per session (no decode) |
+| Measures | speed, bitrate, FPS, buffering; loop + logo CV | delivered share of the live stream, resolution/fps, download rate, peers/seeders, latency |
+| Cost | One ffmpeg + CV sidecars **per stream** | One HTTP poll per OpenStream server every 2 s, for all its sources (no decode) |
 | Screenshots / logo / loop | Yes | No (there are no decoded frames) |
 | Best for | Any HTTP/HLS stream | **AceStream** channels served through an OpenStream gateway |
 
 ### How the OpenStream backend works
 For an `openstream` session, each stream is handled by
 [`OpenStreamStreamMonitor`](../backend/apps/stream/openstream_monitor.py), which
-**duck-types the ffmpeg monitor** so nothing downstream changes:
+**duck-types the ffmpeg monitor**, so the lifecycle, Dispatcharr ordering and UI work
+unchanged.
 
-1. The 40-hex AceStream **content id** and the **API base** are parsed straight from
-   the Dispatcharr stream URL (`http://host:6878/ace/getstream?id=<id>` or the short
-   `/<id>` form) — no separate server config.
-2. On start it admits the id to the OpenStream server (`POST /api/streams`).
-3. It polls `GET /api/streams/<id>` (~2 s) and maps the returned session snapshot
-   onto ffmpeg-style stats: `speed ← health.keepUpMargin`, `is_alive ← state != "dead"`,
-   `is_buffering ← state ∈ {warming, draining, stalled}`, `bitrate ← health.trueBitrateKbps`.
-4. Those feed `CappedSlidingWindow.add_measurement(is_healthy, speed)` exactly as
-   ffmpeg speed would — so the reliability score, review/quarantine lifecycle and
-   Dispatcharr stream ordering all work unchanged.
+1. The 40-hex AceStream **content id** and the **server** are parsed from the
+   Dispatcharr stream URL (`http://host:6878/ace/getstream?id=<id>` or the short
+   `/<id>` form). No per-server configuration is needed.
+2. Every monitor on the same OpenStream server shares one poller
+   ([`openstream_hub.py`](../backend/apps/stream/openstream_hub.py)). Every 2 s it
+   fetches all of its sources in **one** request (`GET /api/streams?ids=…`) over a
+   keep-alive connection and hands each monitor its snapshot. Starting a monitor
+   never touches the network, so a slow or unreachable server cannot stall the
+   monitoring loop. With 100 sources (10 sessions × 10) this measured 0.5 requests/s,
+   2 threads and 0.3% of a core, down from 47 requests/s, 47 new connections/s,
+   101 threads and 4.5% with a thread per source.
+3. Sources are **leased**, not pinned
+   (`POST /api/streams {ids, lease: {owner: "streamflow/<session>", ttlSecs: 300}}`,
+   renewed every 60 s). On stop the lease is released
+   (`POST /api/actions {op: "release"}`), which never stops the stream itself.
+   OpenStream's idle reaper ends it later, once nobody holds or watches it. So:
+   - a viewer watching through Dispatcharr keeps watching;
+   - the operator's warm pool is untouched;
+   - a second session monitoring the same source keeps it.
 
-Besides the keep-up margin (which is deliberately noisy on a warm live pull), the
-snapshot also carries the **reliable swarm signals**, surfaced verbatim in the UI
-instead of the ffmpeg bitrate/FPS/quality columns:
+   If Streamflow dies, its leases expire after 5 min. OpenStream servers from before
+   leases are pinned and removed, as before.
+
+**Ranking.** Each source's score (0–100) is the share of the live stream it actually
+received over the last 5 minutes: the mean of `min(1, kbps / trueBitrateKbps)`.
+It feeds the existing lifecycle (pass review at 70, 10-point switch hysteresis,
+resolution tie-break within 5 points). The ffmpeg speed window is not used for
+OpenStream sources.
+
+The score was chosen empirically, against what a viewer of each pull received
+(simulated players with 2/5/10 s caches). The data is two 80-minute runs on 25
+different live sources during live events, picked on the first run and checked on
+the second:
+
+| Candidate ranking | Agreement with which source stalls next¹ | Viewer stall under Streamflow's ordering |
+|---|---|---|
+| Delivered share, 5 min (**used**) | **0.84** | 0.00 min/h (run 1), 0.07 (run 2), no switches |
+| Previous healthy-poll window | 0.69 | 15.1 min/h (run 1), 0.07 (run 2) |
+| OpenStream `reliabilityScore`, 5 min mean | 0.69 | 0.01 / 0.00 min/h |
+
+¹ Pooled over both runs, 5 s cache, stalls in the next 5 min. The delivered share
+ranked first in all six cache/horizon combinations tested.
+
+At the pass-review threshold of 70, a source stayed stall-free for the next 5 minutes
+87% / 91% of the time, against base rates of 66% / 90%.
+
+The healthy-poll window failed because a source that stalls briefly and often looks
+healthy most of the time: one source read healthy in 77% of polls while a viewer
+stalled on it 137 times.
+
+**Dead sources.** OpenStream reports `dead` after 20 s without any sign of life. That
+isn't the end of the source: all 59 dead episodes recovered, the slowest after 182 s.
+So a dead source is ranked down at once (it delivers nothing, so its score drops) but
+only quarantined, and removed from Dispatcharr, after **300 s** of continuous `dead`.
+Poll failures (server unreachable, API key refused) are never fatal, and never
+trigger the monitor-restart timeout.
+
+**Fields** (surfaced in the session view):
 
 | StreamFlow field | Snapshot source | Meaning |
 |---|---|---|
-| `download_kbps` | top-level `kbps` | smoothed swarm download rate |
-| `peers` / `seeders` | top-level `peers` / `seeders` | connected peers / peers actively feeding us |
-| `swarm_reliability` | `health.reliabilityScore` | server's 0..1 EWMA rank key (the primary health signal) |
-| `latency_secs` | `health.latencySecs` | playback distance behind the live edge |
-| `swarm_state` | `health.state` | `dead`/`warming`/`healthy`/`draining`/`stalled` |
+| `reliability_score` | delivered share, 5 min | the ranking score above |
+| `width` / `height` / `fps` | `media` | source video format from OpenStream's probe; fps is the real frame rate (field-coded interlace counted in frames, matched ffprobe on 11/11 live sources). Feeds the resolution tie-break and the stats synced to Dispatcharr |
+| `bitrate` | `health.trueBitrateKbps` | VBR-correct bitrate (the probe's `media.bitrateKbps` until health exists) |
+| `download_kbps` | `kbps` | smoothed swarm download rate |
+| `peers` / `seeders` | `peers` / `seeders` | connected peers, and those feeding us |
+| `swarm_reliability` | `health.reliabilityScore` | OpenStream's own blend, shown for reference |
+| `latency_secs` | `behindLiveSecs` | delay behind the live edge. `health.latencySecs` agrees within 0.7 s (median) when steady, but reads 0 or up to 46 s off while warming or stalled, so it is only the fallback |
+| `swarm_state` | `health.state` | `warming`/`healthy`/`draining`/`stalled`/`storm`/`dead` |
 
-Only a reported `state == "dead"` marks a source fatally dead; transient poll
-failures (e.g. the OpenStream server briefly unreachable) never evict streams. The
-ffmpeg-only slow-speed quarantine does **not** apply — keep-up margin is not
-playback speed, so a live-but-lagging source stays and is ranked down by its score.
-On session stop the ids are released (`POST /api/actions {"op":"remove"}`).
+The ffmpeg-only slow-speed quarantine does **not** apply: keep-up margin is not
+playback speed.
 
 **Authentication.** OpenStream's `/api` requires a login. Stream playback
 (`/ace/getstream`) does not. Create an API key in OpenStream under

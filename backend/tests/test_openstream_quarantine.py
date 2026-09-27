@@ -135,7 +135,9 @@ class TestOpenStreamRefusedKeyIsNotATimeout(TestOpenStreamQuarantine):
     as timed out. Restarting removes the stream from OpenStream and re-admits
     it, every evaluation."""
 
-    def _evaluate_with_poll_result(self, **patch_kwargs):
+    def _evaluate_with_poll_result(self, status=200, down=False):
+        from apps.stream.openstream_hub import OpenStreamHub
+        from tests.openstream_fake import FakeOpenStream
         import apps.stream.openstream_monitor as om
         session = SessionInfo(session_id='sess1', channel_id=1, channel_name='c', regex_filter='x',
                               created_at=time.time(), is_active=True, streams={}, session_type='openstream')
@@ -143,24 +145,52 @@ class TestOpenStreamRefusedKeyIsNotATimeout(TestOpenStreamQuarantine):
                             stream_id=101, channel_id=1)
         session.streams = {101: stream}
         self.service.session_manager.get_session.return_value = session
-        post = MagicMock()
-        with patch.object(om.requests, 'get', **patch_kwargs), patch.object(om.requests, 'post', post):
+        fake = FakeOpenStream()
+        fake.status, fake.down = status, down
+        hub = OpenStreamHub('http://os:6878')
+        hub._http = fake
+        with patch.object(OpenStreamHub, '_ensure_thread', lambda self: None), \
+             patch.object(om, 'get_hub', lambda base: hub):
             monitor = om.OpenStreamStreamMonitor(url=stream.url, stream_id=101)
-            monitor._poll_once()
+            monitor.start()
+            hub.cycle()
             self.service.monitors = {'sess1': {101: monitor}}
             self.service._evaluate_session_streams('sess1')
-        return stream, post
+            hub.cycle()
+        return stream, fake
 
     def test_refused_key_survives_evaluation(self):
-        resp = MagicMock(status_code=403)
-        stream, post = self._evaluate_with_poll_result(return_value=resp)
+        stream, fake = self._evaluate_with_poll_result(status=403)
         self.assertIn(101, self.service.monitors['sess1'])
         self.assertNotEqual(stream.status_reason, 'timeout-restart')
-        post.assert_not_called()
+        self.assertEqual(fake.count('POST', '/api/actions'), 0)
 
     def test_unreachable_server_survives_evaluation(self):
-        import requests
-        stream, post = self._evaluate_with_poll_result(side_effect=requests.ConnectionError())
+        stream, fake = self._evaluate_with_poll_result(down=True)
         self.assertIn(101, self.service.monitors['sess1'])
         self.assertNotEqual(stream.status_reason, 'timeout-restart')
-        post.assert_not_called()
+        self.assertEqual(fake.count('POST', '/api/actions'), 0)
+
+
+class TestOpenStreamRankScore(TestOpenStreamQuarantine):
+    """OpenStream sources are ranked by delivered share of the live stream
+    (monitor.rank_score), not by the healthy-poll window ffmpeg sources use."""
+
+    def test_service_uses_rank_score(self):
+        session, stream = self._make_session('openstream')
+        stream.low_speed_start_time = None
+        self.service.session_manager.scoring_windows = {'sess1': {101: MagicMock(get_score=lambda: 99.0)}}
+        monitor = self.service.monitors['sess1'][101]
+        monitor.rank_score = lambda: 42.0
+        self.service._evaluate_session_streams('sess1')
+        self.assertEqual(stream.reliability_score, 42.0)
+
+    def test_ffmpeg_keeps_its_window(self):
+        session, stream = self._make_session('ffmpeg')
+        stream.low_speed_start_time = None
+        self.service.session_manager.scoring_windows = {'sess1': {101: MagicMock(get_score=lambda: 99.0)}}
+        monitor = self.service.monitors['sess1'][101]
+        monitor.rank_score = lambda: 42.0
+        monitor.get_stats.return_value.speed = 1.0
+        self.service._evaluate_session_streams('sess1')
+        self.assertEqual(stream.reliability_score, 99.0)

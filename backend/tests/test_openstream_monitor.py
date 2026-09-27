@@ -51,13 +51,42 @@ def test_draining_snapshot_is_buffering():
     assert m.get_transport_health()["status"] == "degraded"
 
 
-def test_dead_snapshot_is_fatal():
+def test_dead_is_fatal_only_after_it_lasts():
+    """Dead sources recover (54/54 episodes, slowest 182 s), so a dead report
+    ranks the source down at once but only evicts it after DEAD_FATAL_SECS."""
+    from apps.stream.openstream_monitor import DEAD_FATAL_SECS
     m = _monitor()
-    m._apply_snapshot({"health": {"state": "dead", "keepUpMargin": 0.0}})
-    assert m.stats.is_alive is False
-    assert m.stats.is_fatal is True
+    m._apply_snapshot({"health": {"state": "dead", "keepUpMargin": 0.0}}, now=1000.0)
+    assert m.stats.is_alive is True and m.stats.is_fatal is False
+    assert m.rank_score() == 0.0  # delivers nothing: ranked last already
+    m._apply_snapshot({"health": {"state": "dead", "keepUpMargin": 0.0}}, now=1000.0 + DEAD_FATAL_SECS - 1)
+    assert m.stats.is_alive is True
+    m._apply_snapshot({"health": {"state": "dead", "keepUpMargin": 0.0}}, now=1000.0 + DEAD_FATAL_SECS)
+    assert m.stats.is_alive is False and m.stats.is_fatal is True
     assert m.get_transport_health()["status"] == "dead"
 
+
+def test_dead_blip_resets():
+    from apps.stream.openstream_monitor import DEAD_FATAL_SECS
+    m = _monitor()
+    m._apply_snapshot({"health": {"state": "dead"}}, now=1000.0)
+    m._apply_snapshot({"health": {"state": "healthy", "keepUpMargin": 1.0}}, now=1010.0)
+    m._apply_snapshot({"health": {"state": "dead"}}, now=1000.0 + DEAD_FATAL_SECS)
+    assert m.stats.is_alive is True  # the clock restarted with the second episode
+
+
+def test_rank_score_is_delivered_share_over_the_window():
+    from apps.stream.openstream_monitor import RANK_WINDOW_SECS
+    m = _monitor()
+    assert m.rank_score() is None
+    snap = lambda kbps: {"kbps": kbps, "health": {"state": "healthy", "keepUpMargin": 1.0, "trueBitrateKbps": 5000}}
+    m._apply_snapshot(snap(5000), now=0.0)    # full delivery
+    m._apply_snapshot(snap(7000), now=1.0)    # catching up: capped at 1
+    m._apply_snapshot(snap(2500), now=2.0)    # half
+    m._apply_snapshot(snap(0), now=3.0)       # nothing
+    assert m.rank_score() == 100 * (1 + 1 + 0.5 + 0) / 4
+    m._apply_snapshot(snap(5000), now=3.0 + RANK_WINDOW_SECS + 0.5)  # older samples age out
+    assert m.rank_score() == 100.0
 
 def test_missing_health_is_warming():
     m = _monitor()
@@ -98,3 +127,29 @@ def test_warming_still_reports_peers_and_download():
     assert m.stats.peers == 8
     assert m.stats.seeders == 2
     assert m.stats.download_kbps == 1500
+
+
+def test_media_probe_fills_resolution_and_fps():
+    """Streamflow ranks ties by resolution then fps and syncs both to
+    Dispatcharr; OpenStream's media probe provides them."""
+    m = _monitor()
+    m._apply_snapshot({
+        "media": {"width": 1920, "height": 1080, "fps": 25, "bitrateKbps": 6000, "videoCodec": "H.264"},
+        "health": {"state": "healthy", "keepUpMargin": 1.0, "trueBitrateKbps": 5800},
+    })
+    assert (m.stats.width, m.stats.height, m.stats.fps) == (1920, 1080, 25)
+    assert m.stats.bitrate == 5800  # the VBR-correct edge bitrate wins over the probe's
+
+
+def test_media_bitrate_used_before_health_exists():
+    m = _monitor()
+    m._apply_snapshot({"media": {"bitrateKbps": 6000}})
+    assert m.stats.bitrate == 6000
+
+
+def test_latency_prefers_behind_live_secs():
+    m = _monitor()
+    m._apply_snapshot({"behindLiveSecs": 8.6, "health": {"state": "healthy", "keepUpMargin": 1.0, "latencySecs": 3}})
+    assert m.stats.latency_secs == 9
+    m._apply_snapshot({"behindLiveSecs": -1, "health": {"state": "healthy", "keepUpMargin": 1.0, "latencySecs": 3}})
+    assert m.stats.latency_secs == 3  # unknown -> fall back
