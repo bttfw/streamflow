@@ -7,6 +7,7 @@ function clients() {
     scheduling: { updateConfig: vi.fn().mockResolvedValue({}) },
     monitoring: { updateSettings: vi.fn().mockResolvedValue({}) },
     connection: { updateConfig: vi.fn().mockResolvedValue({}) },
+    openstream: { updateConfig: vi.fn().mockResolvedValue({}) },
   }
 }
 
@@ -15,6 +16,7 @@ const values = {
   scheduling: { enabled: true },
   monitoring: { review_duration: 60 },
   connection: { base_url: 'http://dispatcharr' },
+  openstream: { api_key: 'k', test_url: 'http://openstream:6878' },
 }
 
 describe('settings saves', () => {
@@ -52,5 +54,15 @@ describe('settings saves', () => {
     })
     expect(apis.monitoring.updateSettings).toHaveBeenCalledTimes(1)
     expect(apis.connection.updateConfig).toHaveBeenCalledTimes(1)
+  })
+
+  it('saves the OpenStream key without touching the Dispatcharr connection', async () => {
+    const apis = clients()
+    expect(await saveSettingsSection('openstream', values, apis)).toEqual({
+      saved: ['openstream'],
+      failed: [],
+    })
+    expect(apis.openstream.updateConfig).toHaveBeenCalledWith(values.openstream)
+    expect(apis.connection.updateConfig).not.toHaveBeenCalled()
   })
 })

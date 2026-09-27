@@ -2,6 +2,7 @@ export const SETTINGS_SAVE_DEPENDENCIES = {
   scheduling: ['automation', 'scheduling'],
   monitoring: ['monitoring'],
   connection: ['connection'],
+  openstream: ['openstream'],
 }
 
 export async function saveSettingsSection(section, values, apis) {
@@ -10,6 +11,7 @@ export async function saveSettingsSection(section, values, apis) {
     scheduling: () => apis.scheduling.updateConfig(values.scheduling),
     monitoring: () => apis.monitoring.updateSettings(values.monitoring),
     connection: () => apis.connection.updateConfig(values.connection),
+    openstream: () => apis.openstream.updateConfig(values.openstream),
   }
   const names = SETTINGS_SAVE_DEPENDENCIES[section]
   if (!names) throw new Error(`Unknown settings section: ${section}`)

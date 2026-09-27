@@ -30,6 +30,12 @@ raw keep-up margin is noisy — see the OpenStream MONITORING docs):
 
 Only a reported ``state == "dead"`` marks the stream fatally dead; transient poll
 failures never do (a down OpenStream server must not evict every source).
+
+Authentication: OpenStream's ``/api`` needs an API key (OpenStream → Settings → API
+Keys), configured in Streamflow under Settings → Connection or via
+``OPENSTREAM_API_KEY`` and sent as ``X-API-Key``. A refused key is reported
+on the stream (``error_message``) but, like an unreachable server, it is
+never fatal: a missing key must not evict every source.
 """
 
 import logging
@@ -41,6 +47,7 @@ from urllib.parse import urlsplit, parse_qs
 
 import requests
 
+from apps.config.openstream_config import openstream_headers
 from apps.core.logging_config import setup_logging
 from apps.stream.ffmpeg_stream_monitor import FFmpegStats
 
@@ -55,6 +62,15 @@ _HTTP_TIMEOUT = 5.0
 
 # health.state values that mean "connected but not cleanly keeping up".
 _BUFFERING_STATES = {"warming", "draining", "stalled"}
+
+# OpenStream's answers when the control plane refuses a request: 401 = the API
+# key is wrong or revoked, 403 = no key was sent, 428 = OpenStream has no
+# account yet (first-run setup not done), so no key can exist either.
+_AUTH_ERRORS = {
+    401: "OpenStream rejected the API key (wrong or revoked). Update it in Settings → Connection.",
+    403: "OpenStream requires an API key. Create one in OpenStream (Settings → API Keys) and add it in Settings → Connection.",
+    428: "OpenStream has no account yet. Finish its first-run setup, then create an API key.",
+}
 
 
 def parse_openstream_url(url: str) -> Tuple[Optional[str], Optional[str]]:
@@ -110,6 +126,7 @@ class OpenStreamStreamMonitor:
         self._buffering = False
         self._state = "warming"
         self._error_density = 0.0
+        self._auth_error: Optional[int] = None  # last refusal status, to log once
         # No UDP sidecar pipes (screenshots/CV don't apply to health monitoring);
         # present as attributes so any incidental access stays safe.
         self.port_a = None
@@ -173,6 +190,7 @@ class OpenStreamStreamMonitor:
             requests.post(
                 f"{self.base}/api/streams",
                 json={"ids": [self.content_id]},
+                headers=openstream_headers(),
                 timeout=_HTTP_TIMEOUT,
             )
         except requests.RequestException as e:
@@ -185,6 +203,7 @@ class OpenStreamStreamMonitor:
             requests.post(
                 f"{self.base}/api/actions",
                 json={"op": "remove", "ids": [self.content_id]},
+                headers=openstream_headers(),
                 timeout=_HTTP_TIMEOUT,
             )
         except requests.RequestException:
@@ -203,7 +222,9 @@ class OpenStreamStreamMonitor:
     def _poll_once(self):
         try:
             resp = requests.get(
-                f"{self.base}/api/streams/{self.content_id}", timeout=_HTTP_TIMEOUT
+                f"{self.base}/api/streams/{self.content_id}",
+                headers=openstream_headers(),
+                timeout=_HTTP_TIMEOUT,
             )
         except requests.RequestException as e:
             # Transient: the server is unreachable. Report buffering (unknown), never
@@ -214,6 +235,13 @@ class OpenStreamStreamMonitor:
             self.stats.error_message = None
             logger.debug("OpenStream poll failed for %s: %s", self.content_id, e)
             return
+        if resp.status_code in _AUTH_ERRORS:
+            self._apply_auth_error(resp.status_code)
+            return
+        if self._auth_error is not None:
+            logger.info("OpenStream at %s accepted the API key again", self.base)
+            self._auth_error = None
+            self.stats.error_message = None
         if resp.status_code == 404:
             # Not admitted (or reaped) — re-admit and treat as warming.
             self._admit()
@@ -225,6 +253,21 @@ class OpenStreamStreamMonitor:
             self._buffering = True
             return
         self._apply_snapshot(snap if isinstance(snap, dict) else {})
+
+    def _apply_auth_error(self, status: int):
+        """OpenStream refused the request. Like an unreachable server this is
+        unknown health, not a dead source: report it and keep polling, so the
+        stream recovers on its own once the key is fixed."""
+        message = _AUTH_ERRORS[status]
+        if self._auth_error != status:
+            logger.warning("OpenStream at %s refused stream %s (HTTP %s): %s",
+                           self.base, self.content_id, status, message)
+            self._auth_error = status
+        self._buffering = True
+        self.stats.speed = 0.0
+        self.stats.is_alive = True
+        self.stats.is_fatal = False
+        self.stats.error_message = message
 
     def _apply_swarm_telemetry(self, snap: dict, health: dict):
         """Copy the swarm signals (peers/seeders/download/score/latency) that have

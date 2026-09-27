@@ -318,6 +318,13 @@ export const dispatcharrAPI = {
   getInitializationStatus: () => api.get('/dispatcharr/initialization-status'),
 };
 
+// OpenStream monitoring: the API key Streamflow sends to OpenStream's control plane.
+export const openstreamAPI = {
+  getConfig: () => api.get('/openstream/config'),
+  updateConfig: (config) => api.put('/openstream/config', config),
+  testConnection: (config) => api.post('/openstream/test-connection', config),
+};
+
 export const sessionSettingsAPI = {
   getSettings: () => api.get('/settings/session'),
   updateSettings: (settings) => api.post('/settings/session', settings),

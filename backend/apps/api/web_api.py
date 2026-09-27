@@ -38,6 +38,7 @@ from apps.background.scheduling_workers import (
 )
 from apps.stream.udp_proxy import UDPProxyManager
 from apps.config.dispatcharr_config import get_dispatcharr_config
+from apps.config.openstream_config import get_openstream_config
 from apps.channels.channel_order_manager import get_channel_order_manager
 from apps.channels.repository import UdiChannelRepository
 from apps.channels.service import ChannelService
@@ -215,6 +216,11 @@ from apps.api.legacy_automation_handlers import (
     get_global_automation_settings_legacy_response,
     update_automation_profile_legacy_response,
     update_global_automation_settings_legacy_response,
+)
+from apps.api.openstream_handlers import (
+    get_openstream_config_response,
+    test_openstream_connection_response,
+    update_openstream_config_response,
 )
 from apps.api.dispatcharr_handlers import (
     get_dispatcharr_config_response,
@@ -1403,6 +1409,29 @@ def test_dispatcharr_connection():
     return test_dispatcharr_connection_response(
         payload=request.get_json(silent=True),
         get_dispatcharr_config=get_dispatcharr_config,
+    )
+
+@app.route('/api/openstream/config', methods=['GET'])
+def get_openstream_config_endpoint():
+    """Get the OpenStream monitoring configuration (without the API key)."""
+    return get_openstream_config_response(
+        get_openstream_config=get_openstream_config,
+    )
+
+@app.route('/api/openstream/config', methods=['PUT'])
+def update_openstream_config_endpoint():
+    """Update the OpenStream API key / test URL."""
+    return update_openstream_config_response(
+        payload=request.get_json(silent=True),
+        get_openstream_config=get_openstream_config,
+    )
+
+@app.route('/api/openstream/test-connection', methods=['POST'])
+def test_openstream_connection():
+    """Test that an OpenStream server accepts the API key."""
+    return test_openstream_connection_response(
+        payload=request.get_json(silent=True),
+        get_openstream_config=get_openstream_config,
     )
 
 @app.route('/api/dispatcharr/initialization-status', methods=['GET'])

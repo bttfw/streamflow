@@ -9,7 +9,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs.j
 import { AlertCircle, CheckCircle2, KeyRound, Loader2, UserRound } from 'lucide-react'
 import { Separator } from '@/components/ui/separator.jsx'
 import { useToast } from '@/hooks/use-toast.js'
-import { automationAPI, dispatcharrAPI, sessionSettingsAPI, schedulingAPI } from '@/services/api.js'
+import { automationAPI, dispatcharrAPI, openstreamAPI, sessionSettingsAPI, schedulingAPI } from '@/services/api.js'
 import AutomationProfileStudio from '@/components/Automation/AutomationProfileStudio.jsx'
 import AutomationPeriods from '@/components/Automation/AutomationPeriods.jsx'
 import { saveSettingsSection, SETTINGS_SAVE_DEPENDENCIES } from '@/lib/settings-save.js'
@@ -19,6 +19,9 @@ const DEFAULT_UDI_REFRESH_INTERVAL_MINUTES = 240
 export default function AutomationSettings() {
   const [config, setConfig] = useState(null)
   const [dispatcharrConfig, setDispatcharrConfig] = useState(null)
+  const [openstreamConfig, setOpenstreamConfig] = useState(null)
+  const [testingOpenstream, setTestingOpenstream] = useState(false)
+  const [openstreamTestResult, setOpenstreamTestResult] = useState(null)
   const [sessionConfig, setSessionConfig] = useState({ review_duration: 60 })
   const [schedulingConfig, setSchedulingConfig] = useState({
     epg_schedule: { type: 'interval', value: 60 },
@@ -40,17 +43,19 @@ export default function AutomationSettings() {
   const loadConfig = async () => {
     try {
       setLoading(true)
-      const [automationResult, dispatcharrResult, sessionResult, schedulingResult] = await Promise.allSettled([
+      const [automationResult, dispatcharrResult, sessionResult, schedulingResult, openstreamResult] = await Promise.allSettled([
         automationAPI.getConfig(),
         dispatcharrAPI.getConfig(),
         sessionSettingsAPI.getSettings(),
         schedulingAPI.getConfig(),
+        openstreamAPI.getConfig(),
       ])
       const loaded = {
         automation: automationResult.status === 'fulfilled',
         connection: dispatcharrResult.status === 'fulfilled',
         monitoring: sessionResult.status === 'fulfilled',
         scheduling: schedulingResult.status === 'fulfilled',
+        openstream: openstreamResult.status === 'fulfilled',
       }
       setLoadedSections(loaded)
       if (loaded.automation) setConfig(automationResult.value.data)
@@ -62,6 +67,7 @@ export default function AutomationSettings() {
           password: '',
         })
       }
+      if (loaded.openstream) setOpenstreamConfig({ ...openstreamResult.value.data, api_key: '' })
       if (loaded.monitoring) setSessionConfig(sessionResult.value.data)
       if (loaded.scheduling) setSchedulingConfig(schedulingResult.value.data)
       const failed = Object.entries(loaded).filter(([, success]) => !success).map(([section]) => section)
@@ -94,11 +100,13 @@ export default function AutomationSettings() {
         scheduling: schedulingConfig,
         monitoring: sessionConfig,
         connection: dispatcharrConfig,
+        openstream: openstreamConfig,
       }, {
         automation: automationAPI,
         scheduling: schedulingAPI,
         monitoring: sessionSettingsAPI,
         connection: dispatcharrAPI,
+        openstream: openstreamAPI,
       })
       if (failed.length > 0) {
         toast({
@@ -108,9 +116,14 @@ export default function AutomationSettings() {
         })
         return
       }
+      if (section === 'openstream') {
+        // The key is write-only: reload to show whether one is now saved.
+        const { data } = await openstreamAPI.getConfig()
+        setOpenstreamConfig({ ...data, api_key: '' })
+      }
       toast({
         title: "Success",
-        description: `${section.charAt(0).toUpperCase()}${section.slice(1)} settings saved successfully`,
+        description: `${section === 'openstream' ? 'OpenStream' : `${section.charAt(0).toUpperCase()}${section.slice(1)}`} settings saved successfully`,
       })
     } catch (err) {
       toast({
@@ -135,6 +148,29 @@ export default function AutomationSettings() {
       ...prev,
       [field]: value
     }))
+  }
+
+  const handleOpenstreamConfigChange = (field, value) => {
+    setOpenstreamConfig(prev => ({
+      ...prev,
+      [field]: value
+    }))
+  }
+
+  const handleTestOpenstream = async () => {
+    try {
+      setTestingOpenstream(true)
+      setOpenstreamTestResult(null)
+      const response = await openstreamAPI.testConnection(openstreamConfig)
+      setOpenstreamTestResult({ success: true, message: response.data?.message || 'Connected' })
+    } catch (err) {
+      setOpenstreamTestResult({
+        success: false,
+        message: err.response?.data?.error || 'Failed to connect to OpenStream',
+      })
+    } finally {
+      setTestingOpenstream(false)
+    }
   }
 
   const handleSessionConfigChange = (field, value) => {
@@ -649,6 +685,92 @@ export default function AutomationSettings() {
               </div>
               <div className="flex justify-end pt-4">
                 <Button onClick={() => handleSave('connection')} disabled={saving || !loadedSections.connection}>
+                  {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Save Settings
+                </Button>
+              </div>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle>OpenStream</CardTitle>
+              <CardDescription>
+                API key for monitoring sessions of type OpenStream. Each stream's OpenStream server is taken from its
+                stream URL; the key is sent to its API. Create it in OpenStream under Settings → API Keys. Stream
+                playback never needs it.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <div className="space-y-2">
+                <Label htmlFor="openstream_api_key">API Key</Label>
+                {openstreamConfig?.api_key_managed_externally ? (
+                  <p className="text-sm text-muted-foreground">
+                    Set by the OPENSTREAM_API_KEY environment variable (or its _FILE variant).
+                  </p>
+                ) : (
+                  <div className="flex gap-2">
+                    <Input
+                      id="openstream_api_key"
+                      type="password"
+                      autoComplete="off"
+                      value={openstreamConfig?.api_key || ''}
+                      onChange={(e) => handleOpenstreamConfigChange('api_key', e.target.value)}
+                      placeholder={openstreamConfig?.has_api_key ? 'Enter a new API key to replace the saved key' : 'Enter API key'}
+                    />
+                    {openstreamConfig?.has_api_key && (
+                      <Button
+                        type="button"
+                        variant="outline"
+                        onClick={() => setOpenstreamConfig(prev => ({ ...prev, api_key: '', clear_api_key: !prev?.clear_api_key }))}
+                      >
+                        {openstreamConfig?.clear_api_key ? 'Keep key' : 'Remove key'}
+                      </Button>
+                    )}
+                  </div>
+                )}
+                {openstreamConfig?.clear_api_key && (
+                  <p className="text-sm text-destructive">The saved key will be removed when you save.</p>
+                )}
+              </div>
+
+              <div className="space-y-2">
+                <Label htmlFor="openstream_test_url">Server URL (for testing)</Label>
+                <Input
+                  id="openstream_test_url"
+                  type="url"
+                  value={openstreamConfig?.test_url || ''}
+                  onChange={(e) => handleOpenstreamConfigChange('test_url', e.target.value)}
+                  placeholder="http://openstream:6878"
+                />
+                <p className="text-sm text-muted-foreground">
+                  Only used by Test Connection. A stream URL from that server works too.
+                </p>
+              </div>
+
+              <div className="flex items-center gap-2 pt-2">
+                <Button onClick={handleTestOpenstream} disabled={testingOpenstream || !loadedSections.openstream} variant="outline">
+                  {testingOpenstream && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
+                  Test Connection
+                </Button>
+                {openstreamTestResult && (
+                  <div className="flex items-center gap-2">
+                    {openstreamTestResult.success ? (
+                      <>
+                        <CheckCircle2 className="h-4 w-4 text-green-600" />
+                        <span className="text-sm text-green-600">{openstreamTestResult.message}</span>
+                      </>
+                    ) : (
+                      <>
+                        <AlertCircle className="h-4 w-4 text-destructive" />
+                        <span className="text-sm text-destructive">{openstreamTestResult.message}</span>
+                      </>
+                    )}
+                  </div>
+                )}
+              </div>
+              <div className="flex justify-end pt-4">
+                <Button onClick={() => handleSave('openstream')} disabled={saving || !loadedSections.openstream}>
                   {saving && <Loader2 className="mr-2 h-4 w-4 animate-spin" />}
                   Save Settings
                 </Button>

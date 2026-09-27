@@ -165,6 +165,21 @@ ffmpeg-only slow-speed quarantine does **not** apply — keep-up margin is not
 playback speed, so a live-but-lagging source stays and is ranked down by its score.
 On session stop the ids are released (`POST /api/actions {"op":"remove"}`).
 
+**Authentication.** OpenStream's `/api` requires a login. Stream playback
+(`/ace/getstream`) does not. Create an API key in OpenStream under
+*Settings → API Keys* and enter it in StreamFlow under *Settings → Connection →
+OpenStream* (or set `OPENSTREAM_API_KEY` / `OPENSTREAM_API_KEY_FILE`). **Test
+Connection** checks the key against a server URL. The monitor sends the key as
+`X-API-Key` on every call, and picks up a changed key within 30 s. If OpenStream
+refuses a request, the stream shows why:
+
+- 401: the key is wrong or revoked.
+- 403: no key is set.
+- 428: OpenStream's first-run setup isn't done.
+
+Like an unreachable server, a refusal is never fatal. Sources stay in the
+not-yet-healthy state and recover on their own once the key is fixed.
+
 > **Requires the full OpenStream *server*** (`cmd/server`, e.g. `compose.server.yml`),
 > which serves the `/api/*` control plane. The gateway-only `openstream serve`
 > (`compose.openstream.yml`) exposes just `/ace/getstream`, so the health poll 404s
