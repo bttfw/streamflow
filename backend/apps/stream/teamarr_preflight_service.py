@@ -9,6 +9,7 @@ already-created channel.
 from __future__ import annotations
 
 import json
+import hashlib
 import os
 import re
 import sys
@@ -26,6 +27,10 @@ import requests
 from apps.core.atomic_json import atomic_write_json, load_json_with_backup
 from apps.core.logging_config import setup_logging
 from apps.udi import get_udi_manager
+from apps.core import http_transport
+from apps.core.metadata_cache import MetadataCache
+from apps.core.operation_timing import OperationTimings
+from apps.stream.preflight_policy import latest_due_bucket, preflight_deadline, parse_time
 
 logger = setup_logging(__name__)
 
@@ -325,7 +330,7 @@ class TeamarrPreflightService:
         self,
         *,
         config_file: Path = CONFIG_FILE,
-        http_get: Callable[..., Any] = requests.get,
+        http_get: Callable[..., Any] = http_transport.get,
         udi_provider: Callable[[], Any] = get_udi_manager,
         stream_checker_provider: Optional[Callable[[], Any]] = None,
         automation_config_provider: Optional[Callable[[], Any]] = None,
@@ -362,6 +367,13 @@ class TeamarrPreflightService:
         self._lock = threading.RLock()
         self._run_once_lock = threading.Lock()
         self._stop_event = threading.Event()
+        self._wake_event = threading.Event()
+        self._catalog_cache = MetadataCache(ttl_seconds=300)
+        self._filter_refresh_thread = None
+        self._pending_stream_retries = {}
+        self._consecutive_scan_failures = 0
+        self._scan_retry_delay = 0.0
+        self._timings = OperationTimings()
         self._thread: Optional[threading.Thread] = None
         self._active_scan_cancel_event: Optional[threading.Event] = None
         self._scan_finished_event = threading.Event()
@@ -545,6 +557,11 @@ class TeamarrPreflightService:
                 payload["api_key"] = current.get("api_key", "")
 
             self._config = normalize_config(payload, current)
+            self._catalog_cache.clear()
+            self._pending_stream_retries.clear()
+            self._consecutive_scan_failures = 0
+            self._scan_retry_delay = 0.0
+            self._wake_event.set()
             self._save_config()
             enabled = self._config["enabled"]
 
@@ -583,6 +600,7 @@ class TeamarrPreflightService:
                 self._config["enabled"] = False
                 self._save_config()
             self._stop_event.set()
+            self._wake_event.set()
             thread = self._thread
             scan_cancel_event = self._active_scan_cancel_event
             if scan_cancel_event is not None:
@@ -626,6 +644,10 @@ class TeamarrPreflightService:
                 "last_scan_at": self._last_scan_at,
                 "last_error": self._last_error,
                 "last_team_error": self._last_team_error,
+                "operation_timings": self._timings.snapshot(),
+                "scan_retry_delay_seconds": self._scan_retry_delay,
+                "pending_stream_retries": len(self._pending_stream_retries),
+                "metadata_cache": {"hits": self._catalog_cache.hits, "misses": self._catalog_cache.misses, "ttl_seconds": 300},
                 "active_checks": list(self._active_checks.values()),
                 "queued_checks": queue_snapshot["queued_checks"],
                 "queued_checks_count": len(queue_snapshot["queued_checks"]),
@@ -836,7 +858,8 @@ class TeamarrPreflightService:
             [*event_candidates, *team_candidates],
             key=self._candidate_sort_key,
         )
-        filter_options = self._build_filter_options(config, [*raw_events, *team_candidates])
+        # Dropdown catalogs are refreshed independently after due work is admitted.
+        filter_options = self._filter_options or self._event_filter_options([*raw_events, *team_candidates])
         team_status = self._team_status_summary(
             enabled=bool(config.get("static_team_preflight_enabled")),
             seen=len(team_statuses),
@@ -938,7 +961,13 @@ class TeamarrPreflightService:
             self._reconcile_attempted_buckets_from_queue()
             self._sync_automation_queue_gate(config)
             now = datetime.fromtimestamp(self.clock(), tz=timezone.utc)
-            scan = self._collect_preflight_scan(config, now)
+            with self._timings.measure("source_scan"):
+                scan = self._collect_preflight_scan(config, now)
+            # Network latency must not leave candidates classified against scan-start time.
+            now = datetime.fromtimestamp(self.clock(), tz=timezone.utc)
+            scan["event_candidates"] = self._build_candidates(scan["raw_events"], config, now)
+            scan["team_candidates"] = self._build_team_candidates(scan["team_statuses"], config, now)
+            scan["combined_items"] = sorted([*scan["event_candidates"], *scan["team_candidates"]], key=self._candidate_sort_key)
             candidates = list(scan["combined_items"])
             launched = 0
             skipped = 0
@@ -955,6 +984,9 @@ class TeamarrPreflightService:
                     skipped += 1
 
             self._store_preflight_scan(scan, scan_error=None)
+            self._schedule_filter_refresh(config, [*scan["raw_events"], *scan["team_candidates"]])
+            self._consecutive_scan_failures = 0
+            self._scan_retry_delay = 0.0
 
             if scan_cancel_event.is_set():
                 return {
@@ -985,7 +1017,14 @@ class TeamarrPreflightService:
             }
         except Exception as exc:
             logger.error(f"Teamarr preflight scan failed: {exc}", exc_info=True)
-            safe_error = "Teamarr preflight scan failed"
+            status_code = getattr(getattr(exc, "response", None), "status_code", None)
+            auth_failed = status_code in {401, 403}
+            safe_error = "Teamarr authentication failed; check connector credentials" if auth_failed else "Teamarr preflight scan failed"
+            self._consecutive_scan_failures += 1
+            interval = int(config.get("poll_interval_seconds", 60))
+            self._scan_retry_delay = min(300.0, interval * 2 ** min(self._consecutive_scan_failures, 4))
+            if not auth_failed and any(abs(int(item.get("seconds_to_start") or 0)) <= 360 for item in self._preflight_items):
+                self._scan_retry_delay = min(self._scan_retry_delay, 30.0)
             with self._lock:
                 self._last_scan_at = self.clock()
                 self._last_error = safe_error
@@ -1081,16 +1120,48 @@ class TeamarrPreflightService:
             self._finish_scan(scan_cancel_event)
 
     def _worker(self) -> None:
-        while not self._stop_event.is_set():
-            with self._lock:
-                config = dict(self._config)
-                enabled = bool(config.get("enabled"))
-                interval = int(config.get("poll_interval_seconds", 60))
+        try:
+            while not self._stop_event.is_set():
+                self._wake_event.clear()
+                started = time.monotonic()
+                with self._lock:
+                    config = dict(self._config)
+                    enabled = bool(config.get("enabled"))
+                    interval = int(config.get("poll_interval_seconds", 60))
+                if enabled:
+                    self.run_once(force=False)
+                delay = max(float(interval), self._scan_retry_delay)
+                self._wake_event.wait(max(0.1, delay - (time.monotonic() - started)))
+        finally:
+            http_transport.close_thread_sessions()
 
-            if enabled:
-                self.run_once(force=False)
+    @staticmethod
+    def _metadata_scope(config):
+        return hashlib.sha256(json.dumps([
+            config.get("teamarr_base_url"), config.get("api_key_header"), config.get("api_key"),
+        ], separators=(",", ":")).encode("utf-8")).hexdigest()
 
-            self._stop_event.wait(interval)
+    def _fetch_catalog_json(self, config, path):
+        return self._catalog_cache.get(
+            (self._metadata_scope(config), path),
+            lambda: self._fetch_teamarr_json(config, path),
+        )
+
+    def _schedule_filter_refresh(self, config, events):
+        with self._lock:
+            if self._filter_refresh_thread and self._filter_refresh_thread.is_alive():
+                return
+            scope = self._metadata_scope(config)
+            def refresh():
+                try:
+                    options = self._build_filter_options(config, events)
+                    with self._lock:
+                        if not self._stop_event.is_set() and scope == self._metadata_scope(self._config):
+                            self._filter_options = options
+                finally:
+                    http_transport.close_thread_sessions()
+            self._filter_refresh_thread = threading.Thread(target=refresh, name="TeamarrFilterOptions", daemon=True)
+            self._filter_refresh_thread.start()
 
     def _fetch_managed_events(self, config: Dict[str, Any]) -> List[Dict[str, Any]]:
         payload = self._fetch_teamarr_json(config, "/api/v1/channels/managed")
@@ -1328,7 +1399,7 @@ class TeamarrPreflightService:
 
         try:
             league_sports = self._league_sports_from_catalog(
-                self._fetch_teamarr_json(config, "/api/v1/cache/leagues")
+                self._fetch_catalog_json(config, "/api/v1/cache/leagues")
             )
         except Exception as exc:
             logger.debug("Teamarr league catalog sport enrichment unavailable: %s", exc)
@@ -1367,9 +1438,9 @@ class TeamarrPreflightService:
         fallback = self._event_filter_options(event_list)
         event_sports_by_league = self._event_sports_by_league(event_list)
         try:
-            subscription = self._fetch_teamarr_json(config, "/api/v1/sports-subscription")
-            sports_catalog = self._fetch_teamarr_json(config, "/api/v1/cache/sports")
-            leagues_catalog = self._fetch_teamarr_json(config, "/api/v1/cache/leagues")
+            subscription = self._fetch_catalog_json(config, "/api/v1/sports-subscription")
+            sports_catalog = self._fetch_catalog_json(config, "/api/v1/cache/sports")
+            leagues_catalog = self._fetch_catalog_json(config, "/api/v1/cache/leagues")
             selected_leagues = self._selected_league_slugs(subscription)
             if not selected_leagues:
                 return fallback
@@ -1933,32 +2004,14 @@ class TeamarrPreflightService:
         *,
         direction: str,
     ) -> tuple[str, Optional[str]]:
-        poll_window_seconds = max(1, int(self._config.get("poll_interval_seconds", 60)))
-        normalized = sorted(
-            {int(offset) for offset in offsets if int(offset) > 0},
-            reverse=(direction == "pre"),
-        )
-        attempted_bucket: Optional[str] = None
-        for offset in normalized:
-            threshold_seconds = offset * 60
-            if direction == "pre":
-                is_due = threshold_seconds - poll_window_seconds <= seconds <= threshold_seconds
-            else:
-                is_due = threshold_seconds <= seconds
-            if not is_due:
-                continue
-
-            bucket = f"{offset}m" if direction == "pre" else f"post+{offset}m"
-            attempted_key = f"{event['identity']}:{bucket}"
-            with self._lock:
-                if attempted_key in self._attempted_buckets:
-                    attempted_bucket = bucket
-                    continue
-            return "due", bucket
-
-        if attempted_bucket:
-            return "already_attempted", attempted_bucket
-        return "scheduled", None
+        bucket = latest_due_bucket(seconds, offsets, direction)
+        if bucket is None:
+            return "scheduled", None
+        attempted_key = f"{event['identity']}:{bucket}"
+        with self._lock:
+            if attempted_key in self._attempted_buckets:
+                return "already_attempted", bucket
+        return "due", bucket
 
     def _passes_filters(self, event: Dict[str, Any], config: Dict[str, Any]) -> bool:
         sport = str(event.get("sport") or "").strip().lower()
@@ -2015,10 +2068,23 @@ class TeamarrPreflightService:
                 {"bucket": event.get("trigger_bucket"), "reason": defer_reason},
             )
             return False
-        if not self._channel_has_streams(channel_id):
-            self._mark_attempted(event)
-            self._record_event("no_streams_yet", event, {"bucket": event.get("trigger_bucket")})
+        pending = self._pending_stream_retries.get(attempted_key)
+        if pending and pending["next_at"] > time.monotonic():
             return False
+        if not self._channel_has_streams(channel_id):
+            retries = int((pending or {}).get("attempts", 0)) + 1
+            deadline = preflight_deadline(event, config)
+            if retries >= 5 or (deadline is not None and self.clock() >= deadline):
+                self._pending_stream_retries.pop(attempted_key, None)
+                self._mark_attempted(event)
+                self._record_event("no_streams_retry_exhausted", event, {"bucket": event.get("trigger_bucket"), "attempts": retries})
+            else:
+                if len(self._pending_stream_retries) >= MAX_PERSISTED_ATTEMPTS:
+                    self._pending_stream_retries.pop(next(iter(self._pending_stream_retries)))
+                self._pending_stream_retries[attempted_key] = {"attempts": retries, "next_at": time.monotonic() + max(15, int(config.get("poll_interval_seconds", 60))), "deadline": deadline}
+                self._record_event("no_streams_yet", event, {"bucket": event.get("trigger_bucket"), "attempts": retries, "retry_pending": True})
+            return False
+        self._pending_stream_retries.pop(attempted_key, None)
         forced_profile_id = self._resolve_profile_id(config.get("forced_profile_id"))
         quality_profile_details = self._quality_profile_details(forced_profile_id)
         if config.get("queue_during_active_checks", True) and self._automation_active():
@@ -2108,6 +2174,8 @@ class TeamarrPreflightService:
             "trigger_bucket": event.get("trigger_bucket"),
             "attempted_key": attempted_key,
             "may_start_full_run": False,
+            "expires_at": preflight_deadline(event, config),
+            "queued_monotonic": time.monotonic(),
             **quality_profile_details,
             "match_evidence": event.get("match_evidence") or self._match_evidence(event),
             "event": {
@@ -2173,6 +2241,46 @@ class TeamarrPreflightService:
                 exc,
             )
 
+    def validate_queued_check(self, metadata):
+        config = self.get_config(include_secret=True)
+        event = dict(metadata.get("event") or {})
+        manual = metadata.get("trigger_bucket") == "manual"
+        if not config.get("enabled") and not manual:
+            return {"success": False, "skipped": True, "reason": "preflight_disabled"}
+        deadline = metadata.get("expires_at")
+        if deadline is None and not manual:
+            deadline = preflight_deadline(event, config)
+        if deadline is not None and self.clock() >= float(deadline):
+            return {"success": False, "skipped": True, "reason": "preflight_expired"}
+        try:
+            if event.get("preflight_kind") == "team":
+                team_id = event.get("teamarr_team_id")
+                raw = self._fetch_teamarr_json(config, f"/api/v1/teams/{team_id}/channel-status", timeout_seconds=5)
+                fresh = self._public_team(raw, datetime.fromtimestamp(self.clock(), tz=timezone.utc))
+            else:
+                fresh = next((self._public_event(item, datetime.fromtimestamp(self.clock(), tz=timezone.utc))
+                              for item in self._fetch_managed_events(config)
+                              if str(item.get("id")) == str(event.get("teamarr_id"))), None)
+            if not fresh or fresh.get("identity") != event.get("identity") or fresh.get("dispatcharr_channel_id") != event.get("dispatcharr_channel_id"):
+                return {"success": False, "skipped": True, "reason": "preflight_event_changed"}
+            if not self._passes_filters(fresh, config):
+                return {"success": False, "skipped": True, "reason": "preflight_filtered"}
+            if str(fresh.get("sync_status") or "").lower() not in READY_SYNC_STATES | {""}:
+                return {"success": False, "reason": "preflight_source_unavailable"}
+            udi = self.udi_provider()
+            channel_id = int(event["dispatcharr_channel_id"])
+            if not udi.refresh_channel_by_id(channel_id):
+                return {"success": False, "reason": "preflight_source_unavailable"}
+            channel = udi.get_channel_by_id(channel_id)
+            expected_uuid = event.get("dispatcharr_uuid")
+            if not channel or (expected_uuid and str(channel.get("uuid")) != str(expected_uuid)):
+                return {"success": False, "skipped": True, "reason": "preflight_channel_changed"}
+            if deadline is not None and self.clock() >= float(deadline):
+                return {"success": False, "skipped": True, "reason": "preflight_expired"}
+            return None
+        except Exception:
+            return {"success": False, "reason": "preflight_source_unavailable"}
+
     def record_queued_check_result(self, metadata: Dict[str, Any], result: Any) -> None:
         """Record the eventual result of a Teamarr preflight check run through the queue."""
         event = dict(metadata.get("event") or {})
@@ -2215,6 +2323,9 @@ class TeamarrPreflightService:
         quality_profile_details = {
             key: value for key, value in quality_profile_details.items() if value not in (None, "")
         }
+        if result.get("skipped"):
+            self._record_event("preflight_skipped", event, {"bucket": metadata.get("trigger_bucket"), "reason": result.get("reason"), **quality_profile_details})
+            return
         deferral_reason = self._controlled_deferral_reason(result)
         if deferral_reason:
             attempted_key = str(metadata.get("attempted_key") or "").strip()
@@ -2499,6 +2610,9 @@ class TeamarrPreflightService:
     def _purge_old_attempts(self) -> None:
         cutoff = self.clock() - int(self._config.get("event_cooldown_minutes", 720)) * 60
         changed = False
+        for retry_key, pending in list(self._pending_stream_retries.items()):
+            if pending.get("deadline") is not None and pending["deadline"] < self.clock():
+                self._pending_stream_retries.pop(retry_key, None)
         with self._lock:
             for key, timestamp in list(self._attempted_buckets.items()):
                 if timestamp < cutoff:

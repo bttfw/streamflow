@@ -13,8 +13,10 @@ import os
 import json
 import threading
 import time
-from typing import Dict, List, Optional, Any, Tuple
+from typing import Dict, List, Optional, Any, Tuple, Callable
 import requests
+from apps.core import http_transport
+from apps.core.operation_timing import OperationTimings
 from pathlib import Path
 from dotenv import load_dotenv, set_key
 
@@ -43,6 +45,7 @@ from apps.core.auth import (
 )
 
 logger = setup_logging(__name__)
+CONTROL_PLANE_TIMINGS = OperationTimings()
 
 _stream_stats_update_lock = threading.RLock()
 _channel_assignment_locks_guard = threading.Lock()
@@ -78,12 +81,12 @@ def fetch_data_from_url(url: str) -> Optional[Any]:
         Optional[Any]: JSON response data if successful, None otherwise.
     """
     log_function_call(logger, "fetch_data_from_url", url=url[:80] if len(url) > 80 else url)
-    start_time = time.time()
+    start_time = time.monotonic()
     
     try:
         log_api_request(logger, "GET", url)
-        resp = requests.get(url, headers=_get_auth_headers(), timeout=30)
-        elapsed = time.time() - start_time
+        resp = http_transport.get(url, headers=_get_auth_headers(), timeout=30)
+        elapsed = time.monotonic() - start_time
         log_api_response(logger, "GET", url, resp.status_code, elapsed)
         
         resp.raise_for_status()
@@ -102,15 +105,15 @@ def fetch_data_from_url(url: str) -> Optional[Any]:
             logger.debug("Got 401 response, attempting token refresh")
             if _refresh_token():
                 logger.info("Retrying request with new token...")
-                retry_start = time.time()
+                retry_start = time.monotonic()
                 log_api_request(logger, "GET", url)
-                resp = requests.get(url, headers=_get_auth_headers(), timeout=30)
-                retry_elapsed = time.time() - retry_start
+                resp = http_transport.get(url, headers=_get_auth_headers(), timeout=30)
+                retry_elapsed = time.monotonic() - retry_start
                 log_api_response(logger, "GET", url, resp.status_code, retry_elapsed)
                 
                 resp.raise_for_status()
                 data = resp.json()
-                total_elapsed = time.time() - start_time
+                total_elapsed = time.monotonic() - start_time
                 log_function_return(logger, "fetch_data_from_url", f"<data: {type(data).__name__}>", total_elapsed)
                 return data
             else:
@@ -145,16 +148,17 @@ def patch_request(url: str, payload: Dict[str, Any], max_retries: int = 2) -> re
     retries = 0
     while retries <= max_retries:
         try:
-            resp = requests.patch(
-                url, json=payload, headers=_get_auth_headers(), timeout=30
-            )
+            with CONTROL_PLANE_TIMINGS.measure("dispatcharr_write"):
+                resp = http_transport.patch(
+                    url, json=payload, headers=_get_auth_headers(), timeout=30
+                )
             resp.raise_for_status()
             return resp
         except requests.exceptions.HTTPError as e:
             if e.response.status_code == 401:
                 if _refresh_token():
                     logger.info("Retrying PATCH request with new token...")
-                    resp = requests.patch(
+                    resp = http_transport.patch(
                         url, json=payload, headers=_get_auth_headers(), timeout=30
                     )
                     resp.raise_for_status()
@@ -182,64 +186,49 @@ def patch_request(url: str, payload: Dict[str, Any], max_retries: int = 2) -> re
             logger.error(f"Error patching data to {url}: {e}")
             raise
 
-def post_request(url: str, payload: Dict[str, Any], max_retries: int = 2) -> requests.Response:
+class UncertainPostResult(requests.exceptions.RequestException):
+    """A control-plane POST may have succeeded; repeating it is unsafe."""
+
+
+def post_request(
+    url: str, payload: Dict[str, Any], max_retries: int = 2, *,
+    retry_safe: bool = False,
+    reconcile: Optional[Callable[[], Optional[requests.Response]]] = None,
+) -> requests.Response:
+    """POST with operation-aware retries and optional read-only reconciliation.
+
+    Authentication rejection and connection establishment failures can be
+    retried. A read timeout, connection loss, or server error after admission
+    is ambiguous for creation/start operations and must not replay the POST.
+    Set retry_safe only for an explicitly idempotent operation.
     """
-    Send a POST request with authentication and retry logic.
-    
-    Makes an authenticated POST request to the specified URL. If the
-    request fails with a 401 error, automatically refreshes the token
-    and retries once. Handle 5xx errors and network issues with retries.
-    
-    Parameters:
-        url (str): The URL to send the POST request to.
-        payload (Dict[str, Any]): The JSON payload to send.
-        max_retries (int): Maximum attempts for transient 500 errors.
-        
-    Returns:
-        requests.Response: The response object from the request.
-        
-    Raises:
-        requests.exceptions.RequestException: If request fails.
-    """
-    retries = 0
-    while retries <= max_retries:
+    for attempt in range(max(0, int(max_retries)) + 1):
         try:
-            resp = requests.post(
-                url, json=payload, headers=_get_auth_headers(), timeout=30
-            )
-            resp.raise_for_status()
-            return resp
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                if _refresh_token():
-                    logger.info("Retrying POST request with new token...")
-                    resp = requests.post(
-                        url, json=payload, headers=_get_auth_headers(), timeout=30
-                    )
-                    resp.raise_for_status()
-                    return resp
-                else:
-                    raise
-            elif e.response.status_code >= 500 and retries < max_retries:
-                logger.warning(f"Got HTTP {e.response.status_code} posting data to {url}. Retrying {retries+1}/{max_retries}...")
-                import time
-                time.sleep(2)
-                retries += 1
-                continue
-            else:
-                logger.error(
-                    f"Error posting data to {url}: {e.response.text}"
-                )
+            with CONTROL_PLANE_TIMINGS.measure("dispatcharr_write"):
+                response = http_transport.post(url, json=payload, headers=_get_auth_headers(), timeout=30)
+            if response.status_code == 401 and attempt == 0 and _refresh_token():
+                # The unauthorized request was rejected, not accepted.
+                with CONTROL_PLANE_TIMINGS.measure("dispatcharr_write"):
+                    response = http_transport.post(url, json=payload, headers=_get_auth_headers(), timeout=30)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            transient = status is None or status >= 500 or status == 429
+            not_admitted = isinstance(exc, requests.exceptions.ConnectTimeout) or status == 429
+            if transient and not not_admitted and not retry_safe:
+                if reconcile is not None:
+                    reconciled = reconcile()
+                    if reconciled is not None:
+                        return reconciled
+                raise UncertainPostResult(
+                    "POST outcome is unknown; automatic replay was suppressed",
+                    response=getattr(exc, "response", None),
+                ) from exc
+            if not transient or attempt >= max_retries:
                 raise
-        except requests.exceptions.RequestException as e:
-            if retries < max_retries:
-                logger.warning(f"Network error posting data to {url}: {e}. Retrying {retries+1}/{max_retries}...")
-                import time
-                time.sleep(2)
-                retries += 1
-                continue
-            logger.error(f"Error posting data to {url}: {e}")
-            raise
+            time.sleep(min(8.0, 2.0 ** (attempt + 1)))
+    raise RuntimeError("POST retry loop did not return a response")
 
 def fetch_channel_streams(channel_id: int) -> Optional[List[Dict[str, Any]]]:
     """

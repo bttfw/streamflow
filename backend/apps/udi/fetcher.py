@@ -13,6 +13,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from typing import Callable, Dict, List, Optional, Any, Set
 import requests
+from apps.core import http_transport
 
 from apps.core.logging_config import setup_logging, log_api_request, log_api_response
 from apps.config.dispatcharr_config import get_dispatcharr_config
@@ -348,7 +349,7 @@ class UDIFetcher:
             try:
                 start_time = time.time()
                 log_api_request(logger, "GET", url)
-                resp = requests.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
+                resp = http_transport.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
                 elapsed = time.time() - start_time
                 log_api_response(logger, "GET", url, resp.status_code, elapsed)
                 self._record_request_timing(
@@ -367,7 +368,7 @@ class UDIFetcher:
                     if _refresh_token():
                         logger.info("Retrying request with new token...")
                         retry_start = time.time()
-                        resp = requests.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
+                        resp = http_transport.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
                         retry_elapsed = time.time() - retry_start
                         self._record_request_timing(
                             method="GET",
@@ -420,7 +421,7 @@ class UDIFetcher:
         try:
             start_time = time.time()
             log_api_request(logger, "POST", url, json=json_body)
-            resp = requests.post(url, headers=_get_auth_headers(), json=json_body, timeout=30)
+            resp = http_transport.post(url, headers=_get_auth_headers(), json=json_body, timeout=30)
             elapsed = time.time() - start_time
             log_api_response(logger, "POST", url, resp.status_code, elapsed)
             self._record_request_timing(
@@ -438,7 +439,7 @@ class UDIFetcher:
                 if _refresh_token():
                     logger.info("Retrying POST request with new token...")
                     retry_start = time.time()
-                    resp = requests.post(url, headers=_get_auth_headers(), json=json_body, timeout=30)
+                    resp = http_transport.post(url, headers=_get_auth_headers(), json=json_body, timeout=30)
                     retry_elapsed = time.time() - retry_start
                     self._record_request_timing(
                         method="POST",
