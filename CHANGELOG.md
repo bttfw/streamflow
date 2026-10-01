@@ -10,6 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
+- **Preflight and control-plane efficiency** - Added a [technical dev changelog](docs/dev-efficiency-changelog-20261002.md) covering checkpoint catch-up, queue validation, metadata reads, conditional status polling, and pending validation.
 - **PR #460 change record** - Added a [detailed changelog](docs/pr460-changelog.md) for the reliability, efficiency, security and responsive UI changes proposed against `dev`.
 - **Monitoring intervals** - Monitoring-session create requests now accept bounded evaluation and enforcement intervals (both default to 1,000 ms).
 - **Channel context and UI previews** - Compact Channel rows show effective automation profile state, and six synthetic-data desktop/mobile screenshots document the implemented Dashboard, Channels and Monitoring views.
@@ -20,6 +21,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Automation run stream health metrics** - Added a dashboard `Good Streams` metric and a compact `Checking now` row for active quality batches.
 
 ### Changed
+- **Preflight admission** - Catch up to the newest crossed checkpoint, retry missing streams within bounded windows, and revalidate queued event/channel identity before execution. Catalog refreshes run separately with a short metadata cache.
+- **Control-plane and UI work** - Reuse thread-owned HTTP connections, coalesce concurrent channel reads, detect stable-ID source changes, revalidate status with ETags, pause serial browser polling when hidden, and render visible stream rows with isolated countdowns.
+- **Checker responsibilities** - Extract queue execution and statistics writing, share acknowledged per-stream write handling, use monotonic durations, and expose separate bounded timing summaries.
 - **Dispatcharr-aligned media tools** - Production and development images use the same pinned LinuxServer FFmpeg/ffprobe 8.1.2 build as the installed Dispatcharr image, with Python 3.11 in a separate virtual environment and the CPU container default retained.
 - **Core workspace and startup** - Dashboard, Channels and Monitoring use compact responsive layouts and accessible mobile navigation. Configured instances bootstrap from readiness instead of waiting for the setup-wizard connection diagnostic on each page load.
 - **Operator-facing progress and setup wording** - Clarified Stream Checker ETA labels, dashboard run counters, startup duration estimates, Teamarr timing buckets, Shadow Monitor switch limits, and Help `Where` locations.
@@ -31,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stream Checker ETA wording** - Provider-limited or floor-based estimates now display as `Rough ETA` with a tooltip explaining expected swings between long channel waits.
 
 ### Fixed
+- **Ambiguous creation responses** - Reconcile newly created channels after uncertain POST outcomes and suppress unconfirmed non-idempotent replays. Legacy changelog memory is bounded.
 - **Reported old streams retained after a check** - Stream-limit removals were misread as UDI cache misses and appended again. Concurrent and sequential write-back now protect genuine cache misses, then enforce the limit while preserving active-viewer streams; the original reporter's instance remains unverified.
 - **PR #460 run and assignment correctness** - Matching worker, validation, inventory and Dispatcharr write failures report failure; single-channel Step 4/5/6 errors stop later work. Channel assignments use per-channel serialization, authoritative preflight and readback.
 - **Manual Discover Streams response** - A successful structured discovery result now returns validated assignment counts in the existing response shape instead of failing when the result contains assigned channels.

@@ -74,6 +74,7 @@ def _make_bitrate_runtime_udi(channel_id, streams, profiles=None):
         lambda stream, profile=None: stream.get('url', '')
     )
     udi.refresh_channel_by_id.return_value = True
+    udi.refresh_channel_metadata.return_value = {'success': True, 'changed_stream_ids': []}
     return udi
 
 

@@ -47,11 +47,19 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   reads share a 300-second monotonic TTL cache scoped to connector credentials.
   Configuration changes invalidate it. Event/team readiness is never TTL cached.
 - Queue metadata includes expiry and an enqueue monotonic timestamp. Queued
-  validation re-reads Teamarr identity and Dispatcharr channel UUID using existing
+  validation checks the queued policy fingerprint (excluding the API key) and
+  re-reads Teamarr
+  identity and Dispatcharr channel UUID using existing
   control-plane endpoints, and records source outages separately from expiry.
+  Invalid time, changed policy/source, disabled preflight, filtering, and channel
+  reuse have explicit skip reasons. Explicit scans and manual checks retain
+  their opt-in behavior while automatic scanning is disabled. Transient source outages release the attempt
+  marker for readmission; expired checkpoints remain terminal.
 - Persistent control-plane sessions belong to the current thread and origin.
   Headers stay per request; cookies do not carry across API operations. No hidden
-  HTTP-adapter retries are enabled.
+  HTTP-adapter retries are enabled. PATCH retries distinguish permission failures
+  from transient transport/server/rate-limit errors, with bounded backoff and
+  numeric Retry-After handling. Authentication is refreshed at most once per call.
 - Ambiguous non-idempotent POST outcomes are not replayed automatically. Callers
   can supply a read-only reconciliation callback. Channel creation reconciles
   new channel IDs against a pre-request baseline and accepts only one matching
@@ -72,7 +80,8 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   indexed records without a full stream-list scan, and acknowledged local
   statistics changes during a metadata read are preserved.
 - Queued preflight validation is wired into the specialized execution module.
-  Direct preflight checks also publish the dedicated preflight run mode.
+  Direct preflight checks also publish the dedicated preflight run mode and
+  reject a changed policy or expired checkpoint before launching media work.
 - Single-stream statistics writes share the existing acknowledged batch writer.
   Each stream still uses Dispatcharr's existing PATCH endpoint; this is not a
   server-side bulk-write API. Cache publication follows successful responses;
@@ -84,8 +93,10 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   durations use monotonic clocks. Event dates and persisted start timestamps
   continue to use calendar time.
 - Bounded operation summaries expose queue wait, provider wait, analysis,
-  metadata/API reads, and acknowledged API write request durations separately.
-  Each phase retains at most 100 samples. They are backend status fields.
+  metadata/API reads, and API write request durations separately.
+  Each phase retains at most 100 samples; totals cover that retained window.
+  Provider wait includes provider/profile/global capacity admission. These are
+  backend status fields and do not add user settings.
 - The browser revalidates eligible status responses with ETags and reuses the
   prior payload for 304 responses. Its cache is bounded to 32 entries and is
   invalidated around mutations and authentication failures. Unsupported status
@@ -100,3 +111,42 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 Targeted backend regression tests, frontend tests/build, relevant full suites,
 and live Unraid validation remain open. New test files are regression
 specifications until executed. No test result or image readiness is claimed.
+
+## Regression specifications added or updated
+
+Not executed in this implementation revision:
+
+- `backend/tests/test_efficiency_primitives.py`: in-flight sharing, failure
+  recovery, catalog TTL/copy semantics, invalidation during reads, crossed
+  checkpoints, deadline calculation, and full-response ETag revalidation.
+- `backend/tests/test_operation_aware_posts.py`: ambiguous response suppression,
+  reconciliation, connect/auth retries, rate limits, permission failures, and
+  per-stream partial statistics write failures.
+- `backend/tests/test_fresh_channel_metadata.py`: stable-ID drift, index
+  consistency, incomplete responses, fresh later reads, and concurrent stats.
+- `backend/tests/test_queued_preflight_validation.py`: expiry before/after reads,
+  channel reuse, source changes/outages, policy changes, invalid times, and
+  queue integration that prevents probes on skipped entries, bounded missing
+  stream retries, and release of attempt markers after source outages.
+- `frontend/src/lib/conditional-status.test.js`: 304 reuse, auth isolation,
+  bounded storage, mutations, and in-flight invalidation.
+- `frontend/src/lib/visible-poller.test.js`: hide/return cancellation and
+  serialization, hidden-tab behavior, and recovery after transient errors.
+- `frontend/src/lib/virtual-rows.test.js`: variable-height ranges, overscan,
+  empty data, and scroll extent.
+- Existing preflight/checker statistics tests and provider fixtures are adapted
+  to the extracted writer and fresh metadata boundary.
+
+## Required runtime validation
+
+- Backend targeted regressions, then relevant checker/UDI/preflight suites.
+- Frontend tests and production build; inspect small and large stream tables,
+  changing row order/heights, countdowns, and narrow viewports.
+- Verify conditional 200/304 transitions across queue/progress changes and
+  mutations; hide/return/unmount during an in-flight request.
+- Live Unraid validation against existing connector APIs: late scans, no-stream
+  retries, queued expiry, transient outages, provider admission, and write-back.
+- Compare added targeted metadata-read cost against saved duplicate reads and
+  connection reuse. Timing samples are instrumentation, not a measured speedup.
+
+No tests, build, runtime verification, or deployment are recorded for this revision.

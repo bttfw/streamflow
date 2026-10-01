@@ -1197,7 +1197,7 @@ class TeamarrPreflightServiceTest(unittest.TestCase):
             "timestamp": "2026-05-28T22:25:00+00:00",
         })
 
-    def test_due_bucket_is_limited_to_poll_window(self):
+    def test_due_bucket_catches_up_after_crossing_poll_window(self):
         checker = FakeChecker()
         service, _, _ = self.make_service(
             [make_event(event_date="2026-05-28T22:09:00+00:00")],
@@ -1208,10 +1208,9 @@ class TeamarrPreflightServiceTest(unittest.TestCase):
         result = service.run_once(force=True)
 
         self.assertTrue(result["success"])
-        self.assertEqual(result["launched"], 0)
-        self.assertEqual(checker.calls, [])
+        self.assertEqual(result["launched"], 1)
         upcoming = service.get_status()["upcoming_events"]
-        self.assertEqual(upcoming[0]["state"], "scheduled")
+        self.assertEqual(upcoming[0]["trigger_bucket"], "10m")
 
     def test_pre_start_bucket_fires_inside_poll_window(self):
         checker = FakeChecker()
@@ -1710,6 +1709,7 @@ class TeamarrPreflightServiceTest(unittest.TestCase):
         service, _, _ = self.make_service([make_event()], http_get=Mock(side_effect=http_get))
 
         result = service.run_once(force=True)
+        service._filter_refresh_thread.join(timeout=2)
         self.assertTrue(result["success"])
 
         options = service.get_status()["filter_options"]
@@ -1744,6 +1744,7 @@ class TeamarrPreflightServiceTest(unittest.TestCase):
         service, _, _ = self.make_service([event], http_get=Mock(side_effect=http_get))
 
         result = service.run_once(force=True)
+        service._filter_refresh_thread.join(timeout=2)
         self.assertTrue(result["success"])
 
         options = service.get_status()["filter_options"]

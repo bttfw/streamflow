@@ -32,8 +32,9 @@ api.interceptors.response.use(
     if (!['get', 'head', 'options'].includes(method)) statusCache.clear();
     const accepted = statusCache.accept(response);
     if (accepted) return accepted;
-    const config = { ...response.config, headers: { ...response.config.headers }, _statusUnconditional: true };
-    delete config.headers['If-None-Match'];
+    const headers = axios.AxiosHeaders.from(response.config.headers);
+    headers.delete('If-None-Match');
+    const config = { ...response.config, headers, _statusUnconditional: true };
     return api.request(config);
   },
   (error) => {

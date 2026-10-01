@@ -2,7 +2,7 @@
 
 import logging
 from typing import Any, Dict, Optional
-from apps.core.api_utils import _get_base_url, batch_update_stream_stats
+from apps.core.api_utils import batch_update_stream_stats
 
 logger = logging.getLogger(__name__)
 
@@ -20,11 +20,6 @@ class StreamStatsWriterMixin:
         This ensures that the UDI cache always reflects the latest stats written to Dispatcharr,
         preventing inconsistencies between changelog data and actual Dispatcharr data.
         """
-        base_url = _get_base_url()
-        if not base_url:
-            logger.error("DISPATCHARR_BASE_URL not set.")
-            return False
-        
         stream_id = stream_data.get("stream_id")
         if not stream_id:
             logger.warning("No stream_id in stream data. Skipping stats update.")

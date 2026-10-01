@@ -34,6 +34,7 @@ export class ConditionalStatusCache {
   accept(response) {
     const request = response.config?._statusCache
     if (!request) return response
+    if (request.generation !== this.generation) return null
     const entry = this.entries.get(request.key)
     if (response.status === 304) {
       if (request.generation !== this.generation || !entry || entry.etag !== request.etag) return null

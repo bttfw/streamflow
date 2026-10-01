@@ -2683,6 +2683,7 @@ class SmartStreamScheduler:
                     acquired_stream_url = None
                     acquired_global = False
                     wait_started = time.monotonic()
+                    wait_recorded = False
                     wait_reason = None
                     retrying_after_preempt = False
                     preemption_token = object()
@@ -2950,6 +2951,7 @@ class SmartStreamScheduler:
                         STREAM_OPERATION_TIMINGS.record(
                             'provider_wait', time.monotonic() - wait_started,
                         )
+                        wait_recorded = True
                         with STREAM_OPERATION_TIMINGS.measure('analysis'):
                             result = check_function(
                                 stream_url=stream_url,
@@ -2983,6 +2985,8 @@ class SmartStreamScheduler:
                             return wrapped_check(preempted_for_viewer=True)
                         return result
                     finally:
+                        if not wait_recorded:
+                            STREAM_OPERATION_TIMINGS.record('provider_wait', time.monotonic() - wait_started)
                         finalize_completion()
 
                 # Submit to executor

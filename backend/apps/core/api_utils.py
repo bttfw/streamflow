@@ -127,64 +127,30 @@ def fetch_data_from_url(url: str) -> Optional[Any]:
         return None
 
 def patch_request(url: str, payload: Dict[str, Any], max_retries: int = 2) -> requests.Response:
-    """
-    Send a PATCH request with authentication and retry logic.
-    
-    Makes an authenticated PATCH request to the specified URL. If the
-    request fails with a 401 error, automatically refreshes the token
-    and retries once. Handle 5xx errors and network issues with retries.
-    
-    Parameters:
-        url (str): The URL to send the PATCH request to.
-        payload (Dict[str, Any]): The JSON payload to send.
-        max_retries (int): Maximum attempts for transient 500 errors.
-        
-    Returns:
-        requests.Response: The response object from the request.
-        
-    Raises:
-        requests.exceptions.RequestException: If request fails.
-    """
-    retries = 0
-    while retries <= max_retries:
+    """Write an absolute-field PATCH with bounded auth/transient retries."""
+    max_retries = max(0, int(max_retries))
+    for attempt in range(max_retries + 1):
         try:
             with CONTROL_PLANE_TIMINGS.measure("dispatcharr_write"):
-                resp = http_transport.patch(
-                    url, json=payload, headers=_get_auth_headers(), timeout=30
-                )
-            resp.raise_for_status()
-            return resp
-        except requests.exceptions.HTTPError as e:
-            if e.response.status_code == 401:
-                if _refresh_token():
-                    logger.info("Retrying PATCH request with new token...")
-                    resp = http_transport.patch(
-                        url, json=payload, headers=_get_auth_headers(), timeout=30
-                    )
-                    resp.raise_for_status()
-                    return resp
-                else:
-                    raise
-            elif e.response.status_code >= 500 and retries < max_retries:
-                logger.warning(f"Got HTTP {e.response.status_code} patching data to {url}. Retrying {retries+1}/{max_retries}...")
-                import time
-                time.sleep(2)
-                retries += 1
-                continue
-            else:
-                logger.error(
-                    f"Error patching data to {url}: {e.response.text}"
-                )
+                response = http_transport.patch(url, json=payload, headers=_get_auth_headers(), timeout=30)
+            if response.status_code == 401 and attempt == 0 and _refresh_token():
+                with CONTROL_PLANE_TIMINGS.measure("dispatcharr_write"):
+                    response = http_transport.patch(url, json=payload, headers=_get_auth_headers(), timeout=30)
+            response.raise_for_status()
+            return response
+        except requests.exceptions.RequestException as exc:
+            status = getattr(getattr(exc, "response", None), "status_code", None)
+            if (status is not None and status < 500 and status != 429) or attempt >= max_retries:
                 raise
-        except requests.exceptions.RequestException as e:
-            if retries < max_retries:
-                logger.warning(f"Network error patching data to {url}: {e}. Retrying {retries+1}/{max_retries}...")
-                import time
-                time.sleep(2)
-                retries += 1
-                continue
-            logger.error(f"Error patching data to {url}: {e}")
-            raise
+            delay = min(8.0, 2.0 ** (attempt + 1))
+            if status == 429:
+                try:
+                    delay = min(30.0, max(0.0, float(exc.response.headers.get("Retry-After", delay))))
+                except (TypeError, ValueError):
+                    pass
+            time.sleep(delay)
+    raise RuntimeError("PATCH retry loop did not return a response")
+
 
 class UncertainPostResult(requests.exceptions.RequestException):
     """A control-plane POST may have succeeded; repeating it is unsafe."""
@@ -202,7 +168,8 @@ def post_request(
     is ambiguous for creation/start operations and must not replay the POST.
     Set retry_safe only for an explicitly idempotent operation.
     """
-    for attempt in range(max(0, int(max_retries)) + 1):
+    max_retries = max(0, int(max_retries))
+    for attempt in range(max_retries + 1):
         try:
             with CONTROL_PLANE_TIMINGS.measure("dispatcharr_write"):
                 response = http_transport.post(url, json=payload, headers=_get_auth_headers(), timeout=30)
@@ -958,7 +925,7 @@ def _merge_stream_stats_update(
 
 def batch_update_stream_stats(stream_stats_list: List[Dict[str, Any]], batch_size: int = 10) -> Tuple[int, int]:
     """
-    Batch update stream stats to reduce API calls during stream checking.
+    Write stream stats in bounded chunks through the existing per-stream API.
     
     This function updates multiple stream stats in batches to optimize performance
     during large-scale stream checking operations. Instead of making one API call
@@ -1001,7 +968,7 @@ def batch_update_stream_stats(stream_stats_list: List[Dict[str, Any]], batch_siz
         logger.error(f"Failed to get UDI manager: {e}")
         return 0, total
     
-    # Process in batches to limit concurrent API calls
+    # Group sequential writes into chunks; Dispatcharr has no bulk stats endpoint here.
     for i in range(0, total, batch_size):
         batch = stream_stats_list[i:i + batch_size]
         logger.debug(f"Processing batch {i // batch_size + 1}/{(total + batch_size - 1) // batch_size} ({len(batch)} streams)")
