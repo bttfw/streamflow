@@ -347,10 +347,10 @@ class UDIFetcher:
         """
         for attempt in range(1, GET_RETRY_ATTEMPTS + 1):
             try:
-                start_time = time.time()
+                start_time = time.monotonic()
                 log_api_request(logger, "GET", url)
                 resp = http_transport.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
-                elapsed = time.time() - start_time
+                elapsed = time.monotonic() - start_time
                 log_api_response(logger, "GET", url, resp.status_code, elapsed)
                 self._record_request_timing(
                     method="GET",
@@ -367,9 +367,9 @@ class UDIFetcher:
                 if status_code == 401:
                     if _refresh_token():
                         logger.info("Retrying request with new token...")
-                        retry_start = time.time()
+                        retry_start = time.monotonic()
                         resp = http_transport.get(url, headers=_get_auth_headers(), timeout=GET_TIMEOUT_SECONDS)
-                        retry_elapsed = time.time() - retry_start
+                        retry_elapsed = time.monotonic() - retry_start
                         self._record_request_timing(
                             method="GET",
                             url=url,
@@ -394,7 +394,7 @@ class UDIFetcher:
                 self._record_request_timing(
                     method="GET",
                     url=url,
-                    elapsed=time.time() - start_time if 'start_time' in locals() else 0,
+                    elapsed=time.monotonic() - start_time if 'start_time' in locals() else 0,
                     status_code=None,
                     success=False,
                 )
@@ -419,10 +419,10 @@ class UDIFetcher:
             Parsed JSON response, or None on failure.
         """
         try:
-            start_time = time.time()
+            start_time = time.monotonic()
             log_api_request(logger, "POST", url, json=json_body)
             resp = http_transport.post(url, headers=_get_auth_headers(), json=json_body, timeout=30)
-            elapsed = time.time() - start_time
+            elapsed = time.monotonic() - start_time
             log_api_response(logger, "POST", url, resp.status_code, elapsed)
             self._record_request_timing(
                 method="POST",
@@ -438,9 +438,9 @@ class UDIFetcher:
             if e.response is not None and e.response.status_code == 401:
                 if _refresh_token():
                     logger.info("Retrying POST request with new token...")
-                    retry_start = time.time()
+                    retry_start = time.monotonic()
                     resp = http_transport.post(url, headers=_get_auth_headers(), json=json_body, timeout=30)
-                    retry_elapsed = time.time() - retry_start
+                    retry_elapsed = time.monotonic() - retry_start
                     self._record_request_timing(
                         method="POST",
                         url=url,
@@ -456,7 +456,7 @@ class UDIFetcher:
             self._record_request_timing(
                 method="POST",
                 url=url,
-                elapsed=time.time() - start_time if 'start_time' in locals() else 0,
+                elapsed=time.monotonic() - start_time if 'start_time' in locals() else 0,
                 status_code=None,
                 success=False,
             )

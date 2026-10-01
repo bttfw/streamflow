@@ -16,7 +16,7 @@ import time
 from typing import Dict, List, Optional, Any, Tuple, Callable
 import requests
 from apps.core import http_transport
-from apps.core.operation_timing import OperationTimings
+from apps.core.operation_timing import STREAM_OPERATION_TIMINGS
 from pathlib import Path
 from dotenv import load_dotenv, set_key
 
@@ -45,7 +45,7 @@ from apps.core.auth import (
 )
 
 logger = setup_logging(__name__)
-CONTROL_PLANE_TIMINGS = OperationTimings()
+CONTROL_PLANE_TIMINGS = STREAM_OPERATION_TIMINGS
 
 _stream_stats_update_lock = threading.RLock()
 _channel_assignment_locks_guard = threading.Lock()
@@ -218,7 +218,10 @@ def post_request(
             not_admitted = isinstance(exc, requests.exceptions.ConnectTimeout) or status == 429
             if transient and not not_admitted and not retry_safe:
                 if reconcile is not None:
-                    reconciled = reconcile()
+                    try:
+                        reconciled = reconcile()
+                    except Exception:
+                        reconciled = None
                     if reconciled is not None:
                         return reconciled
                 raise UncertainPostResult(
@@ -777,7 +780,37 @@ def create_channel_from_stream(
     if channel_group_id:
         data["channel_group_id"] = channel_group_id
     
-    return post_request(url, data)
+    fetcher = get_udi_manager().fetcher
+    baseline = fetcher.fetch_channel_ids()
+
+    def reconcile_created_channel():
+        if baseline is None:
+            return None
+        current = fetcher.fetch_channel_ids()
+        if current is None:
+            return None
+        candidates = []
+        for candidate_id in current - baseline:
+            channel = fetcher.fetch_channel_by_id(candidate_id)
+            if not channel or int(stream_id) not in {int(sid) for sid in channel.get('streams') or []}:
+                continue
+            if name and channel.get('name') != name:
+                continue
+            if channel_number is not None and str(channel.get('channel_number')) != str(channel_number):
+                continue
+            if channel_group_id and str(channel.get('channel_group_id')) != str(channel_group_id):
+                continue
+            candidates.append(channel)
+        if len(candidates) != 1:
+            return None
+        response = requests.Response()
+        response.status_code = 201
+        response.headers['Content-Type'] = 'application/json'
+        response._content = json.dumps(candidates[0]).encode('utf-8')
+        response.url = url
+        return response
+
+    return post_request(url, data, reconcile=reconcile_created_channel)
 
 def add_streams_to_channel(
     channel_id: int, stream_ids: List[int], valid_stream_ids: Optional[set] = None,

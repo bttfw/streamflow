@@ -859,7 +859,8 @@ class TeamarrPreflightService:
             key=self._candidate_sort_key,
         )
         # Dropdown catalogs are refreshed independently after due work is admitted.
-        filter_options = self._filter_options or self._event_filter_options([*raw_events, *team_candidates])
+        filter_options = (self._filter_options if self._filter_options.get("sports") or self._filter_options.get("leagues")
+                          else self._event_filter_options([*raw_events, *team_candidates]))
         team_status = self._team_status_summary(
             enabled=bool(config.get("static_team_preflight_enabled")),
             seen=len(team_statuses),
@@ -2267,12 +2268,18 @@ class TeamarrPreflightService:
                 return {"success": False, "skipped": True, "reason": "preflight_filtered"}
             if str(fresh.get("sync_status") or "").lower() not in READY_SYNC_STATES | {""}:
                 return {"success": False, "reason": "preflight_source_unavailable"}
+            if fresh.get("preflight_kind") == "team" and (
+                fresh.get("team_status") != "ready" or not fresh.get("live_window_event_evidence")
+            ):
+                return {"success": False, "reason": "preflight_source_unavailable"}
             udi = self.udi_provider()
             channel_id = int(event["dispatcharr_channel_id"])
             if not udi.refresh_channel_by_id(channel_id):
                 return {"success": False, "reason": "preflight_source_unavailable"}
             channel = udi.get_channel_by_id(channel_id)
             expected_uuid = event.get("dispatcharr_uuid")
+            if channel and not channel.get("streams"):
+                return {"success": False, "reason": "preflight_source_unavailable"}
             if not channel or (expected_uuid and str(channel.get("uuid")) != str(expected_uuid)):
                 return {"success": False, "skipped": True, "reason": "preflight_channel_changed"}
             if deadline is not None and self.clock() >= float(deadline):
@@ -2367,6 +2374,7 @@ class TeamarrPreflightService:
                 is_epg_scheduled=True,
                 forced_profile_id=forced_profile_id,
                 force_check=True,
+                run_mode="teamarr_preflight",
             )
             deferral_reason = self._controlled_deferral_reason(result)
             if deferral_reason:

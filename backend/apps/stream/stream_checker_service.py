@@ -66,29 +66,12 @@ from apps.automation.channel_visibility_automation import (
 from apps.core.auth import _refresh_token
 
 
-VISUAL_PROBE_REPORT_FIELDS = (
-    "visual_probe_ran",
-    "visual_probe_completed",
-    "visual_probe_incomplete",
-    "visual_probe_incomplete_reason",
-    "visual_probe_requested_duration_seconds",
-    "visual_probe_minimum_duration_seconds",
-    "visual_probe_duration_seconds",
-    "visual_probe_duration_adjusted",
-    "visual_probe_duration_adjustment_reason",
-    "visual_probe_elapsed_time",
-)
+from apps.stream.quality_report_fields import VISUAL_PROBE_REPORT_FIELDS, BITRATE_RECHECK_REPORT_FIELDS
+from apps.stream.queue_execution import StreamCheckQueueExecutionMixin
+from apps.stream.stream_stats_writer import StreamStatsWriterMixin
+from apps.core.operation_timing import STREAM_OPERATION_TIMINGS
 
 _STREAM_STATUS_HEARTBEAT_INTERVAL_SECONDS = 2.0
-
-BITRATE_RECHECK_REPORT_FIELDS = (
-    "measurement_incomplete",
-    "measurement_incomplete_reason",
-    "measurement_incomplete_context",
-    "bitrate_recheck_required",
-    "bitrate_recheck_attempted",
-    "bitrate_recheck_outcome",
-)
 
 # Import channel settings manager
 # Import channel settings manager - DEPRECATED/REMOVED
@@ -290,7 +273,7 @@ def _resolve_single_channel_m3u_refresh_scope(
     return [], "none"
 
 
-class StreamCheckerService:
+class StreamCheckerService(StreamCheckQueueExecutionMixin, StreamStatsWriterMixin):
     """Main service for managing stream checking operations."""
     SINGLE_CHANNEL_RUN_SNAPSHOT_MAX_BYTES = 50 * 1024
     
@@ -948,45 +931,7 @@ class StreamCheckerService:
                 queue_entry_token,
             )
 
-    def _run_specialized_queue_entry_owned(
-        self,
-        queue_entry: Dict[str, Any],
-        *,
-        force_check_generation: Optional[int] = None,
-    ) -> None:
-        channel_id = queue_entry.get('channel_id')
-        queue_entry_token = queue_entry.get('queue_entry_token')
-        queue_metadata = queue_entry.get('metadata') or {}
-        forced_profile_id = queue_metadata.get('forced_profile_id')
-        single_check_kwargs = {
-            'program_name': queue_metadata.get('program_name'),
-            'is_epg_scheduled': bool(queue_metadata.get('is_epg_scheduled')),
-            'forced_profile_id': forced_profile_id,
-        }
-        if queue_metadata.get('source') == 'teamarr_preflight':
-            single_check_kwargs['run_mode'] = 'teamarr_preflight'
-        if queue_metadata.get('provider_limit_override'):
-            single_check_kwargs['provider_limit_override'] = True
-
-        with self.lock:
-            abort_was_set = self.abort_current_check.is_set()
-            external_abort_generation = int(
-                getattr(self, '_external_abort_generation', 0)
-            )
-            owned_sync_generation = (
-                getattr(self, '_sync_batch_execution_generation', None)
-                if getattr(self, '_sync_batch_execution_active', False)
-                else None
-            )
-        result = self.check_single_channel(
-            channel_id,
-            _operation_already_reserved=True,
-            _queue_force_check_generation=force_check_generation,
-            _queue_entry_token=queue_entry_token,
-            **single_check_kwargs,
-        )
-
-        def record_teamarr_result() -> None:
+    def record_teamarr_result() -> None:
             if queue_metadata.get('source') != 'teamarr_preflight':
                 return
             try:
@@ -1746,301 +1691,6 @@ class StreamCheckerService:
             return None
     
     
-    def _update_stream_stats(self, stream_data: Dict) -> bool:
-        """Update stream stats for a single stream on the server and sync with UDI cache.
-        
-        This method:
-        1. Constructs the stats payload from analyzed stream data
-        2. Merges with existing stats on Dispatcharr
-        3. PATCHes the updated stats to Dispatcharr
-        4. Updates the UDI cache to keep it in sync
-        
-        This ensures that the UDI cache always reflects the latest stats written to Dispatcharr,
-        preventing inconsistencies between changelog data and actual Dispatcharr data.
-        """
-        base_url = _get_base_url()
-        if not base_url:
-            logger.error("DISPATCHARR_BASE_URL not set.")
-            return False
-        
-        stream_id = stream_data.get("stream_id")
-        if not stream_id:
-            logger.warning("No stream_id in stream data. Skipping stats update.")
-            return False
-        
-        bitrate_value = self._bitrate_payload_value(stream_data.get("bitrate_kbps"))
-        preserve_existing_bitrate = self._should_preserve_existing_bitrate(stream_data)
-
-        # Construct the stream stats payload from the analyzed stream data
-        stream_stats_payload = {
-            "resolution": stream_data.get("resolution"),
-            "source_fps": stream_data.get("fps"),
-            "video_codec": stream_data.get("video_codec"),
-            "audio_codec": stream_data.get("audio_codec"),
-            "hdr_format": stream_data.get("hdr_format"),
-            "pixel_format": stream_data.get("pixel_format"),
-            "audio_sample_rate": stream_data.get("audio_sample_rate"),
-            "audio_channels": stream_data.get("audio_channels"),
-            "channel_layout": stream_data.get("channel_layout"),
-            "audio_bitrate": stream_data.get("audio_bitrate"),
-            "ffmpeg_output_bitrate": bitrate_value,
-            "bitrate_source": stream_data.get("bitrate_source"),
-            "quality_score": stream_data.get("score"),
-            "quality_reason": stream_data.get("quality_reason"),
-            "quality_reason_detail": stream_data.get("quality_reason_detail"),
-            "quality_reason_context": stream_data.get("quality_reason_context"),
-            "measurement_incomplete": bool(stream_data.get("measurement_incomplete")),
-            "measurement_incomplete_reason": stream_data.get("measurement_incomplete_reason") or "none",
-            "measurement_incomplete_context": stream_data.get("measurement_incomplete_context") or {},
-            "bitrate_recheck_required": bool(stream_data.get("bitrate_recheck_required")),
-            "bitrate_recheck_attempted": bool(stream_data.get("bitrate_recheck_attempted")),
-            "bitrate_recheck_outcome": stream_data.get("bitrate_recheck_outcome") or "not_needed",
-            "visual_probe_ran": True if stream_data.get("visual_probe_ran") else (False if "visual_probe_ran" in stream_data else None),
-            "visual_probe_completed": stream_data.get("visual_probe_completed") if "visual_probe_completed" in stream_data else None,
-            "visual_probe_incomplete": stream_data.get("visual_probe_incomplete") if "visual_probe_incomplete" in stream_data else None,
-            "visual_probe_incomplete_reason": (
-                stream_data.get("visual_probe_incomplete_reason") or "none"
-                if "visual_probe_ran" in stream_data or "visual_probe_incomplete_reason" in stream_data
-                else None
-            ),
-            "visual_probe_requested_duration_seconds": stream_data.get(
-                "visual_probe_requested_duration_seconds"
-            ),
-            "visual_probe_minimum_duration_seconds": stream_data.get(
-                "visual_probe_minimum_duration_seconds"
-            ),
-            "visual_probe_duration_seconds": stream_data.get("visual_probe_duration_seconds"),
-            "visual_probe_duration_adjusted": stream_data.get("visual_probe_duration_adjusted"),
-            "visual_probe_duration_adjustment_reason": stream_data.get(
-                "visual_probe_duration_adjustment_reason"
-            ),
-            "visual_probe_elapsed_time": stream_data.get("visual_probe_elapsed_time"),
-            # PRESERVE_FALSE: emit False (not None) so the None-filter below keeps these
-            # fields in the payload even when the probe ran but found no loop.
-            # Without this, Dispatcharr's PATCH merge leaves a stale loop_probe_ran: true
-            # from a previous run in place for streams not probed in the current run.
-            "loop_probe_ran": True if stream_data.get("loop_probe_ran") else (False if "loop_probe_ran" in stream_data else None),
-            "loop_detected": stream_data.get("loop_detected") if stream_data.get("loop_probe_ran") else (False if "loop_detected" in stream_data else None),
-            "loop_duration_secs": stream_data.get("loop_duration_secs") if stream_data.get("loop_detected") else None,
-            "loop_score_penalty": stream_data.get("loop_score_penalty"),
-            "blank_probe_ran": True if stream_data.get("blank_probe_ran") else (False if "blank_probe_ran" in stream_data else None),
-            "blank_detected": stream_data.get("blank_detected") if stream_data.get("blank_probe_ran") else (False if "blank_detected" in stream_data else None),
-            "blank_duration_secs": stream_data.get("blank_duration_secs") if stream_data.get("blank_probe_ran") else None,
-            "blank_ratio": stream_data.get("blank_ratio") if stream_data.get("blank_probe_ran") else None,
-            "freeze_probe_ran": True if stream_data.get("freeze_probe_ran") else (False if "freeze_probe_ran" in stream_data else None),
-            "freeze_detected": stream_data.get("freeze_detected") if stream_data.get("freeze_probe_ran") else (False if "freeze_detected" in stream_data else None),
-            "freeze_duration_secs": stream_data.get("freeze_duration_secs") if stream_data.get("freeze_probe_ran") else None,
-            "freeze_ratio": stream_data.get("freeze_ratio") if stream_data.get("freeze_probe_ran") else None,
-        }
-        
-        # Clean up the payload, removing None and N/A values.
-        # PRESERVE_FALSE: keep False values for boolean loop fields so they
-        # explicitly clear stale True values in Dispatcharr on PATCH merge.
-        PRESERVE_FALSE = {
-            "loop_probe_ran",
-            "loop_detected",
-            "blank_probe_ran",
-            "blank_detected",
-            "freeze_probe_ran",
-            "freeze_detected",
-            "visual_probe_ran",
-            "visual_probe_completed",
-            "visual_probe_incomplete",
-            "visual_probe_duration_adjusted",
-            "measurement_incomplete",
-            "bitrate_recheck_required",
-            "bitrate_recheck_attempted",
-        }
-        PRESERVE_NULL = set()
-        if not preserve_existing_bitrate:
-            PRESERVE_NULL.add("ffmpeg_output_bitrate")
-        stream_stats_payload = {
-            k: v for k, v in stream_stats_payload.items()
-            if v not in [None, "N/A"] or (v is None and k in PRESERVE_NULL)
-        }
-        for k in PRESERVE_FALSE:
-            if k in stream_stats_payload or stream_data.get(k) is False:
-                stream_stats_payload[k] = stream_data.get(k) if stream_data.get(k) is not None else False
-        
-        if not stream_stats_payload:
-            logger.debug(f"No data to update for stream {stream_id}. Skipping.")
-            return False
-        
-        # Construct the URL for the specific stream
-        stream_url = f"{base_url}/api/channels/streams/{int(stream_id)}/"
-
-        _stream_stats_update_lock.acquire()
-        try:
-            # Fetch the existing stream data from UDI
-            udi = get_udi_manager()
-            existing_stream_data = udi.get_stream_by_id(int(stream_id))
-            if not existing_stream_data:
-                logger.warning(f"Could not fetch existing data for stream {stream_id}. Skipping stats update.")
-                return False
-            
-            # Get the existing stream_stats or an empty dict
-            existing_stats = existing_stream_data.get("stream_stats") or {}
-            if isinstance(existing_stats, str):
-                try:
-                    existing_stats = json.loads(existing_stats)
-                except json.JSONDecodeError:
-                    existing_stats = {}
-            
-            # Merge the existing stats with the new payload
-            updated_stats = {**existing_stats, **stream_stats_payload}
-            
-            # Send the PATCH request with the updated stream_stats
-            patch_payload = {"stream_stats": updated_stats}
-            logger.info(f"Updating stream {stream_id} stats with: {stream_stats_payload}")
-            patch_request(stream_url, patch_payload)
-            
-            # Update UDI cache with the new stats to keep it in sync with Dispatcharr
-            # This ensures changelog and verification read the correct, up-to-date data
-            updated_stream_data = existing_stream_data.copy()
-            updated_stream_data['stream_stats'] = updated_stats
-            udi.update_stream(int(stream_id), updated_stream_data)
-            logger.debug(f"Updated UDI cache for stream {stream_id} with new stats")
-            
-            return True
-        
-        except Exception as e:
-            logger.error(f"Error updating stats for stream {stream_id}: {e}")
-            return False
-        finally:
-            _stream_stats_update_lock.release()
-    
-    def _prepare_stream_stats_for_batch(self, stream_data: Dict) -> Optional[Dict[str, Any]]:
-        """
-        Prepare stream stats for batch update.
-        
-        This method extracts and formats stream stats from analyzed stream data
-        for use in batch update operations.
-        
-        Parameters:
-            stream_data (Dict): Analyzed stream data with resolution, fps, codecs, bitrate
-            
-        Returns:
-            Optional[Dict[str, Any]]: Dict with 'stream_id' and 'stream_stats' keys,
-                                     or None if no valid stats to update
-        """
-        stream_id = stream_data.get("stream_id")
-        if not stream_id:
-            logger.warning("No stream_id in stream data. Skipping stats preparation.")
-            return None
-        
-        bitrate_value = self._bitrate_payload_value(stream_data.get("bitrate_kbps"))
-        preserve_existing_bitrate = self._should_preserve_existing_bitrate(stream_data)
-
-        # Construct the stream stats payload from the analyzed stream data
-        stream_stats_payload = {
-            "resolution": stream_data.get("resolution"),
-            "source_fps": stream_data.get("fps"),
-            "video_codec": stream_data.get("video_codec"),
-            "audio_codec": stream_data.get("audio_codec"),
-            "hdr_format": stream_data.get("hdr_format"),
-            "pixel_format": stream_data.get("pixel_format"),
-            "audio_sample_rate": stream_data.get("audio_sample_rate"),
-            "audio_channels": stream_data.get("audio_channels"),
-            "channel_layout": stream_data.get("channel_layout"),
-            "audio_bitrate": stream_data.get("audio_bitrate"),
-            "ffmpeg_output_bitrate": bitrate_value,
-            "bitrate_source": stream_data.get("bitrate_source"),
-            "quality_score": stream_data.get("score"),
-            "quality_reason": stream_data.get("quality_reason"),
-            "quality_reason_detail": stream_data.get("quality_reason_detail"),
-            "quality_reason_context": stream_data.get("quality_reason_context"),
-            "measurement_incomplete": bool(stream_data.get("measurement_incomplete")),
-            "measurement_incomplete_reason": stream_data.get("measurement_incomplete_reason") or "none",
-            "measurement_incomplete_context": stream_data.get("measurement_incomplete_context") or {},
-            "bitrate_recheck_required": bool(stream_data.get("bitrate_recheck_required")),
-            "bitrate_recheck_attempted": bool(stream_data.get("bitrate_recheck_attempted")),
-            "bitrate_recheck_outcome": stream_data.get("bitrate_recheck_outcome") or "not_needed",
-            "visual_probe_ran": True if stream_data.get("visual_probe_ran") else False,
-            "visual_probe_completed": stream_data.get("visual_probe_completed") if "visual_probe_completed" in stream_data else False,
-            "visual_probe_incomplete": stream_data.get("visual_probe_incomplete") if "visual_probe_incomplete" in stream_data else False,
-            "visual_probe_incomplete_reason": (
-                stream_data.get("visual_probe_incomplete_reason") or "none"
-                if "visual_probe_ran" in stream_data or "visual_probe_incomplete_reason" in stream_data
-                else None
-            ),
-            "visual_probe_requested_duration_seconds": stream_data.get(
-                "visual_probe_requested_duration_seconds"
-            ),
-            "visual_probe_minimum_duration_seconds": stream_data.get(
-                "visual_probe_minimum_duration_seconds"
-            ),
-            "visual_probe_duration_seconds": stream_data.get("visual_probe_duration_seconds"),
-            "visual_probe_duration_adjusted": stream_data.get("visual_probe_duration_adjusted"),
-            "visual_probe_duration_adjustment_reason": stream_data.get(
-                "visual_probe_duration_adjustment_reason"
-            ),
-            "visual_probe_elapsed_time": stream_data.get("visual_probe_elapsed_time"),
-            # PRESERVE_FALSE: emit False (not None) so the None-filter below keeps these
-            # fields in the payload even when the probe ran but found no loop.
-            # Without this, Dispatcharr's PATCH merge leaves a stale loop_probe_ran: true
-            # from a previous run in place for streams not probed in the current run.
-            "loop_probe_ran": True if stream_data.get("loop_probe_ran") else False,
-            "loop_detected": stream_data.get("loop_detected") if stream_data.get("loop_probe_ran") else False,
-            "loop_duration_secs": stream_data.get("loop_duration_secs") if stream_data.get("loop_detected") else None,
-            "loop_score_penalty": stream_data.get("loop_score_penalty"),
-            "blank_probe_ran": True if stream_data.get("blank_probe_ran") else False,
-            "blank_detected": stream_data.get("blank_detected") if stream_data.get("blank_probe_ran") else False,
-            "blank_duration_secs": stream_data.get("blank_duration_secs") if stream_data.get("blank_probe_ran") else None,
-            "blank_ratio": stream_data.get("blank_ratio") if stream_data.get("blank_probe_ran") else None,
-            "freeze_probe_ran": True if stream_data.get("freeze_probe_ran") else False,
-            "freeze_detected": stream_data.get("freeze_detected") if stream_data.get("freeze_probe_ran") else False,
-            "freeze_duration_secs": stream_data.get("freeze_duration_secs") if stream_data.get("freeze_probe_ran") else None,
-            "freeze_ratio": stream_data.get("freeze_ratio") if stream_data.get("freeze_probe_ran") else None,
-        }
-        
-        # Clean up the payload, removing None and N/A values.
-        # PRESERVE_FALSE: keep False values for boolean loop fields so they
-        # explicitly clear stale True values in Dispatcharr on PATCH merge.
-        PRESERVE_FALSE = {
-            "loop_probe_ran",
-            "loop_detected",
-            "blank_probe_ran",
-            "blank_detected",
-            "freeze_probe_ran",
-            "freeze_detected",
-            "visual_probe_ran",
-            "visual_probe_completed",
-            "visual_probe_incomplete",
-            "visual_probe_duration_adjusted",
-            "measurement_incomplete",
-            "bitrate_recheck_required",
-            "bitrate_recheck_attempted",
-        }
-        QUALITY_FIELDS = {
-            "quality_reason",
-            "quality_reason_detail",
-            "quality_reason_context",
-        }
-        stream_stats_payload = {
-            k: v for k, v in stream_stats_payload.items()
-            if (
-                v not in [None, "N/A"]
-                or (
-                    v is None
-                    and k not in PRESERVE_FALSE
-                    and k not in QUALITY_FIELDS
-                    and not (k == "ffmpeg_output_bitrate" and preserve_existing_bitrate)
-                )
-            )
-        }
-        for k in PRESERVE_FALSE:
-            if k in stream_stats_payload or stream_data.get(k) is False:
-                stream_stats_payload[k] = stream_data.get(k) if stream_data.get(k) is not None else False
-        
-        if not stream_stats_payload:
-            logger.debug(f"No data to update for stream {stream_id}. Skipping.")
-            return None
-        
-        return {
-            'stream_id': stream_id,
-            'stream_stats': stream_stats_payload
-        }
-
     @staticmethod
     def _bitrate_payload_value(value: Any) -> Optional[int]:
         parsed = parse_bitrate_value(value)
@@ -3056,7 +2706,7 @@ class StreamCheckerService:
             safe_channel_name = channel_name or (
                 f"Channel {channel_id}" if channel_id is not None else "Quality check"
             )
-            deadline = time.time() + recovery_wait_seconds
+            deadline = time.monotonic() + recovery_wait_seconds
             first_failure = {
                 'reason': result.reason,
                 'message': result.message,
@@ -3070,8 +2720,8 @@ class StreamCheckerService:
                 result.message,
                 recovery_wait_seconds,
             )
-            while time.time() < deadline and not self.abort_current_check.is_set():
-                remaining = max(0.0, deadline - time.time())
+            while time.monotonic() < deadline and not self.abort_current_check.is_set():
+                remaining = max(0.0, deadline - time.monotonic())
                 sleep_for = min(recovery_poll_seconds, remaining)
                 recovery_attempts += 1
                 self.connectivity_guard_status = {
@@ -3114,7 +2764,7 @@ class StreamCheckerService:
                         'active': False,
                         'first_failure': first_failure,
                         'attempts': recovery_attempts,
-                        'remaining_seconds': round(max(0.0, deadline - time.time()), 1),
+                        'remaining_seconds': round(max(0.0, deadline - time.monotonic()), 1),
                         'channel_id': channel_id,
                         'channel_name': safe_channel_name,
                         'recovered': True,
@@ -3789,6 +3439,7 @@ class StreamCheckerService:
             return self.progress.update(**progress_fields)
         
         start_time = time_module.time()
+        started_monotonic = time_module.monotonic()
         log_function_call(logger, "_check_channel_concurrent", channel_id=channel_id)
         
         log_state_change(logger, f"channel_{channel_id}", "queued", "checking")
@@ -3823,8 +3474,13 @@ class StreamCheckerService:
         try:
             automation_config = get_automation_config_manager()
 
-            # Fetch channel data to get group_id (might be fetched already but just in case)
+            # Refresh stable-ID source changes before immunity and profile decisions.
             udi = get_udi_manager()
+            with STREAM_OPERATION_TIMINGS.measure('metadata_read'):
+                metadata = udi.refresh_channel_metadata(channel_id)
+            if not metadata.get('success'):
+                raise RuntimeError(metadata.get('reason') or 'channel_metadata_unavailable')
+            self.update_tracker.invalidate_checked_streams(channel_id, metadata.get('changed_stream_ids', []))
             channel = udi.get_channel_by_id(channel_id)
             group_id = channel.get('channel_group_id') if channel else None
 
@@ -5822,6 +5478,7 @@ class StreamCheckerService:
 
         import time as time_module
         start_time = time_module.time()
+        started_monotonic = time_module.monotonic()
         log_function_call(logger, "_check_channel_sequential", channel_id=channel_id)
         
         log_state_change(logger, f"channel_{channel_id}", "queued", "checking")
@@ -8304,6 +7961,7 @@ class StreamCheckerService:
             'automation_cycle_active': automation_cycle_active,
             'sync_batch_execution_active': sync_execution_active,
             'enabled': self.config.get('enabled', True),
+            'operation_timings': STREAM_OPERATION_TIMINGS.snapshot(),
             'queue': queue_status,
             'progress': progress,
             'progress_stale': bool(progress_stale),
@@ -8974,7 +8632,7 @@ class StreamCheckerService:
                     self.sync_batch_state['queued_streams_count'] = max(0, self.sync_batch_state['queued_streams_count'] - stream_count)
                     self.sync_batch_state['in_progress_streams_count'] = stream_count
                     
-                channel_start_time = datetime.now()
+                channel_started_monotonic = time.monotonic()
                 try:
                     # Both modes use the smart scheduler. Sequential mode limits
                     # it to one active basis probe so capacity reservations and
@@ -9071,7 +8729,7 @@ class StreamCheckerService:
                         except Exception as progress_error:
                             logger.debug("Synchronous channel progress callback failed: %s", progress_error)
 
-                    duration_sec = (datetime.now() - channel_start_time).total_seconds()
+                    duration_sec = time.monotonic() - channel_started_monotonic
                     with self.lock:
                         sync_still_active = bool(
                             self.sync_batch_state.get('generation') == sync_generation
@@ -9171,6 +8829,7 @@ class StreamCheckerService:
             # marker, not a potentially newer request for the same channel.
             force_check = True
         start_time = time_module.time()
+        started_monotonic = time_module.monotonic()
         udi = None
         operation_progress_generation = None
 
@@ -10251,7 +9910,7 @@ class StreamCheckerService:
                 f"Writing results for {channel_name}",
             )
             end_time = time_module.time()
-            duration_seconds = int(end_time - start_time)
+            duration_seconds = int(time_module.monotonic() - started_monotonic)
             
             # Format duration as human-readable string
             if duration_seconds < 60:
@@ -10620,6 +10279,7 @@ class StreamCheckerService:
         import time as time_module
 
         start_time = time_module.time()
+        started_monotonic = time_module.monotonic()
 
         try:
             try:
@@ -10824,7 +10484,7 @@ class StreamCheckerService:
                     'persisted': False,
                 }
 
-            duration_seconds = round(time_module.time() - start_time, 2)
+            duration_seconds = round(time_module.monotonic() - started_monotonic, 2)
             return {
                 'success': True,
                 'stream_id': stream_id_int,

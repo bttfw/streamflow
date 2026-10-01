@@ -10,6 +10,7 @@ from urllib.parse import urlsplit
 
 import requests
 from requests.adapters import HTTPAdapter
+from apps.core.operation_timing import STREAM_OPERATION_TIMINGS
 
 _local = threading.local()
 
@@ -40,7 +41,8 @@ def close_thread_sessions() -> None:
 
 
 def get(url: str, **kwargs):
-    return get_session(url).get(url, **kwargs)
+    with STREAM_OPERATION_TIMINGS.measure("api_read"):
+        return get_session(url).get(url, **kwargs)
 
 
 def post(url: str, **kwargs):

@@ -34,3 +34,6 @@ class OperationTimings:
                 }
                 for phase, values in self._samples.items() if values
             }
+
+
+STREAM_OPERATION_TIMINGS = OperationTimings()

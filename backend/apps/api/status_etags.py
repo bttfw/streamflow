@@ -13,8 +13,9 @@ from flask import request
 _STATUS_PATH = re.compile(
     r"^/api/(?:automation/status|stream-checker/(?:status|progress)|"
     r"teamarr-preflight/status|shadow-blank-monitor/status|"
-    r"stream-monitoring/(?:sessions(?:/[^/]+)?|status)|"
-    r"monitoring/(?:sessions(?:/[^/]+)?|status)|udi/(?:status|stats))$"
+    r"stream-sessions(?:/[^/]+)?|viewer-activity/status|job-arbiter/status|"
+    r"scheduling/(?:processor|epg-refresh|udi-refresh)/status|"
+    r"dispatcharr/initialization-status|udi/(?:status|stats))$"
 )
 
 
