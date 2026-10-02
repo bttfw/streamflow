@@ -2,7 +2,7 @@
 
 Status: draft validation. Targeted backend regressions, isolated integration
 contracts, frontend tests, and the frontend production build have passed. The
-complete stable backend suite and live validation of the new image are pending.
+live validation of the new image is pending.
 
 Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
@@ -125,6 +125,11 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   continue exercising the real validator. Post-start catch-up is tested inside
   the grace deadline rather than at its expiry boundary.
 
+- Updated only `urllib3` from 2.7.0 to 2.8.0 in the production and test
+  hash locks to resolve PYSEC-2026-4175, PYSEC-2026-4176, and PYSEC-2026-4177
+  reported by the dependency audit. Wheel/source hashes come from the
+  [official release metadata](https://pypi.org/project/urllib3/2.8.0/).
+
 ## Recorded validation
 
 Local environment: Windows, Python 3.12.10, Node 24.15.0.
@@ -135,7 +140,9 @@ Local environment: Windows, Python 3.12.10, Node 24.15.0.
 - Frontend: 295 tests passed across 39 files; production build passed.
 - Frontend dependency audit: high-severity gate passed; two existing moderate
   React Router findings remain. No forced major-version upgrade is included.
-- Complete stable backend suite: final rerun pending.
+- Complete stable backend suite: 1,984 passed, 1 skipped.
+- Upgraded HTTP dependency: 32 focused tests passed with `urllib3` 2.8.0;
+  the production Python dependency audit reports no known vulnerabilities.
 - Live validation of the new image: pending. Existing deployment baseline pages
   load without browser exceptions; that baseline is not evidence for this image.
 
