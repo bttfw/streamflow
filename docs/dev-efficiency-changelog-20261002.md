@@ -1,8 +1,8 @@
 # Dev reliability and efficiency work - 2026-10-02
 
-Status: draft implementation. Tests, build verification, and runtime validation
-are pending. This document describes implementation changes; it does not claim
-release readiness or a deployed image.
+Status: draft validation. Targeted backend regressions, isolated integration
+contracts, frontend tests, and the frontend production build have passed. The
+complete stable backend suite and live validation of the new image are pending.
 
 Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
@@ -106,15 +106,42 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 - Stream countdowns update isolated cells. Tables with at least 100 streams
   render the visible range plus overscan, measuring variable row heights.
 
-## Validation pending
+## Validation corrections - 2026-10-02
 
-Targeted backend regression tests, frontend tests/build, relevant full suites,
-and live Unraid validation remain open. New test files are regression
-specifications until executed. No test result or image readiness is claimed.
+- Restored the complete queue terminalization callback and abort-isolation block
+  inside the extracted queue mixin. Python compilation and queue lifecycle tests
+  now cover the complete module rather than its partial extraction.
+- Failed or incomplete fresh metadata reads now defer checks before profile
+  fallback, checked-stream immunity, media analysis, or assignment writes.
+  Teamarr attempt markers are released for this transient deferral.
+- Newly assigned streams establish their statistics baseline before the stream
+  read: fresh server values replace old cached statistics, while acknowledged
+  writes during that read remain preserved.
+- Catalog publication uses a generation fence. Stop/configuration changes reject
+  old in-flight catalogs; a subsequent explicit scan can publish fresh dropdown
+  options while automatic scanning remains disabled.
+- HTTP timeout/retry tests mock the shared transport boundary. Queue ownership
+  fixtures explicitly accept queued validation; dedicated expiry/source tests
+  continue exercising the real validator. Post-start catch-up is tested inside
+  the grace deadline rather than at its expiry boundary.
+
+## Recorded validation
+
+Local environment: Windows, Python 3.12.10, Node 24.15.0.
+
+- Backend compilation: passed (`python -m compileall -q backend/apps`).
+- Targeted regression/preflight/connectivity tests: 123 passed.
+- Isolated integration contracts: 57 passed, 1 skipped.
+- Frontend: 295 tests passed across 39 files; production build passed.
+- Frontend dependency audit: high-severity gate passed; two existing moderate
+  React Router findings remain. No forced major-version upgrade is included.
+- Complete stable backend suite: final rerun pending.
+- Live validation of the new image: pending. Existing deployment baseline pages
+  load without browser exceptions; that baseline is not evidence for this image.
 
 ## Regression specifications added or updated
 
-Not executed in this implementation revision:
+Executed locally during draft validation:
 
 - `backend/tests/test_efficiency_primitives.py`: in-flight sharing, failure
   recovery, catalog TTL/copy semantics, invalidation during reads, crossed
@@ -149,4 +176,4 @@ Not executed in this implementation revision:
 - Compare added targeted metadata-read cost against saved duplicate reads and
   connection reuse. Timing samples are instrumentation, not a measured speedup.
 
-No tests, build, runtime verification, or deployment are recorded for this revision.
+Performance timing samples remain instrumentation; no production speedup is claimed.

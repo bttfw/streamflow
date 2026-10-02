@@ -408,6 +408,7 @@ class TestConcurrentLimiterIntegration(unittest.TestCase):
         
         # Mock UDI manager
         udi_mock = MagicMock()
+        udi_mock.refresh_channel_metadata.return_value = {'success': True, 'changed_stream_ids': []}
         udi_mock.get_channel_by_id.return_value = {
             'id': 1,
             'name': 'Test Channel',

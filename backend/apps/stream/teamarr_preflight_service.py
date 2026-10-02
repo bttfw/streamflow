@@ -81,6 +81,7 @@ DEFAULT_TEAMARR_PREFLIGHT_VISIBILITY_POLICY: Dict[str, Any] = {
     "unhide_on_recovered": False,
 }
 CONTROLLED_CHECK_DEFERRAL_REASONS = {
+    "channel_metadata_unavailable",
     "preflight_source_unavailable",
     "active_viewers",
     "max_streams_reached",
@@ -371,6 +372,7 @@ class TeamarrPreflightService:
         self._wake_event = threading.Event()
         self._catalog_cache = MetadataCache(ttl_seconds=300)
         self._filter_refresh_thread = None
+        self._filter_refresh_generation = 0
         self._pending_stream_retries = {}
         self._consecutive_scan_failures = 0
         self._scan_retry_delay = 0.0
@@ -559,6 +561,8 @@ class TeamarrPreflightService:
 
             self._config = normalize_config(payload, current)
             self._catalog_cache.clear()
+            self._filter_refresh_generation += 1
+            self._filter_options = {"sports": [], "leagues": [], "source": "events"}
             self._pending_stream_retries.clear()
             self._consecutive_scan_failures = 0
             self._scan_retry_delay = 0.0
@@ -601,6 +605,7 @@ class TeamarrPreflightService:
                 self._config["enabled"] = False
                 self._save_config()
             self._stop_event.set()
+            self._filter_refresh_generation += 1
             self._wake_event.set()
             thread = self._thread
             scan_cancel_event = self._active_scan_cancel_event
@@ -1163,11 +1168,12 @@ class TeamarrPreflightService:
             if self._filter_refresh_thread and self._filter_refresh_thread.is_alive():
                 return
             scope = self._metadata_scope(config)
+            generation = self._filter_refresh_generation
             def refresh():
                 try:
                     options = self._build_filter_options(config, events)
                     with self._lock:
-                        if not self._stop_event.is_set() and scope == self._metadata_scope(self._config):
+                        if generation == self._filter_refresh_generation and scope == self._metadata_scope(self._config):
                             self._filter_options = options
                 except Exception:
                     logger.warning("Teamarr preflight filter catalog refresh unavailable")

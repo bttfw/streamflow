@@ -56,6 +56,12 @@ class ChannelMetadataMixin:
         if not channel or int(channel.get('id', 0)) != channel_id:
             return {'success': False, 'reason': 'channel_metadata_unavailable'}
         stream_ids = {int(sid) for sid in channel.get('streams') or []}
+        # Newly assigned streams were outside the old channel's snapshot. Record
+        # their current stats before the stream read so old cached values do not
+        # override fresh server values, while writes during that read still win.
+        with self._lock:
+            for sid in stream_ids - baseline_stats.keys():
+                baseline_stats[sid] = copy.deepcopy(self._streams_by_id.get(sid, {}).get('stream_stats'))
         streams = self.fetcher.fetch_streams_by_ids(sorted(stream_ids)) if stream_ids else []
         if {int(item['id']) for item in streams} != stream_ids:
             return {'success': False, 'reason': 'stream_metadata_incomplete'}

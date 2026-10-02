@@ -4,6 +4,8 @@ from unittest.mock import Mock
 
 from apps.core.request_coalescing import SingleFlight
 from apps.udi.manager import UDIManager
+from apps.stream.stream_checker_service import StreamCheckerService
+import pytest
 
 
 def manager():
@@ -80,6 +82,29 @@ def test_later_read_is_fresh_and_group_index_tracks_channel_changes():
     assert udi.fetcher.fetch_channel_by_id.call_count == 2
 
 
+def test_newly_assigned_stream_accepts_fresh_server_stats():
+    udi = manager()
+    udi._channels_by_id[77]['streams'] = []
+    udi.fetcher.fetch_streams_by_ids.return_value[0]['stream_stats'] = {'quality_score': 8}
+    assert udi.refresh_channel_metadata(77)['success']
+    assert udi._streams_by_id[9]['stream_stats'] == {'quality_score': 8}
+
+
+def test_newly_assigned_stream_preserves_write_during_stream_read():
+    udi = manager()
+    udi._channels_by_id[77]['streams'] = []
+    server = copy.deepcopy(udi._streams_by_id[9])
+    server['stream_stats'] = {'quality_score': 8}
+
+    def read_streams(ids):
+        udi.update_stream(9, {**udi._streams_by_id[9], 'stream_stats': {'quality_score': 10}})
+        return [server]
+
+    udi.fetcher.fetch_streams_by_ids.side_effect = read_streams
+    assert udi.refresh_channel_metadata(77)['success']
+    assert udi._streams_by_id[9]['stream_stats'] == {'quality_score': 10}
+
+
 def test_statistics_update_keeps_index_record_and_custom_flag():
     udi = manager()
     record = udi._streams_by_id[9]
@@ -87,3 +112,21 @@ def test_statistics_update_keeps_index_record_and_custom_flag():
     assert udi._streams_cache[0] is udi._streams_by_account_id[1][0] is record
     udi.update_stream(10, {'id': 10, 'url': 'http://custom.invalid/live', 'm3u_account_id': None})
     assert udi._has_custom_streams
+
+
+@pytest.mark.parametrize('failure', [None, TimeoutError('offline')])
+def test_failed_metadata_read_cannot_launch_probes(monkeypatch, failure):
+    udi = manager()
+    udi.refresh_channel_metadata = Mock(return_value={'success': False, 'reason': 'stream_metadata_incomplete'}, side_effect=failure)
+    monkeypatch.setattr('apps.stream.stream_checker_service.get_udi_manager', lambda: udi)
+    checker = StreamCheckerService.__new__(StreamCheckerService)
+    checker._capture_operation_progress_generation = Mock(return_value=(True, None))
+    checker.config = Mock()
+    checker.config.get.side_effect = lambda key, default=None: default
+    checker._fail_channel_check = Mock()
+    probe = Mock()
+    monkeypatch.setattr('apps.stream.stream_checker_service.analyze_stream', probe)
+    result = checker._check_channel_concurrent(77, queue_entry_token=12)
+    assert result['success'] is False and result['skip_reason'] == 'channel_metadata_unavailable'
+    checker._fail_channel_check.assert_called_once_with(77, 'channel_metadata_unavailable', queue_entry_token=12)
+    probe.assert_not_called()

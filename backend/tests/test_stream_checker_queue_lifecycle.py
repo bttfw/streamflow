@@ -380,6 +380,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
 
     def test_profile_disabled_queue_entry_reaches_terminal_state(self):
         service = StreamCheckerService.__new__(StreamCheckerService)
+        service.update_tracker = self._in_memory_update_tracker()
         service.check_queue = StreamCheckQueue(max_size=10)
         service.abort_current_check = threading.Event()
         service.checking = False
@@ -391,6 +392,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
             'profile': {'stream_checking': {'enabled': False}},
         }
         udi = Mock()
+        udi.refresh_channel_metadata.return_value = {'success': True, 'changed_stream_ids': []}
         udi.get_channel_by_id.return_value = {
             'id': 77,
             'channel_group_id': 3,
@@ -1297,6 +1299,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         automation_config = Mock()
         automation_config.get_effective_configuration.return_value = {}
         udi = Mock()
+        udi.refresh_channel_metadata.return_value = {'success': True, 'changed_stream_ids': []}
         udi.get_channel_by_id.return_value = {
             'id': 105,
             'name': 'No Streams',
@@ -1306,6 +1309,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         for method_name in ('_check_channel_concurrent', '_check_channel_sequential'):
             with self.subTest(method_name=method_name):
                 service = StreamCheckerService.__new__(StreamCheckerService)
+                service.update_tracker = self._in_memory_update_tracker()
                 service.config = Mock()
                 service.config.get.side_effect = (
                     lambda _key, default=None: default
@@ -2088,6 +2092,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
 
         service.check_single_channel = Mock(side_effect=complete_after_abort)
         teamarr_service = Mock()
+        teamarr_service.validate_queued_check.return_value = None
         self.assertTrue(service.check_queue.add_channel(
             105,
             priority=100,
@@ -2165,6 +2170,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         service._active_batch_changelog_generation = None
         service._batch_changelog_generation = 0
         teamarr_service = Mock()
+        teamarr_service.validate_queued_check.return_value = None
 
         def fail_after_clear(*_args, **_kwargs):
             service.clear_queue()
@@ -2447,6 +2453,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         service._check_channel = Mock()
         service.check_single_channel = Mock(return_value={'success': True})
         teamarr_service = Mock()
+        teamarr_service.validate_queued_check.return_value = None
 
         def pull_entry(timeout):
             service.running = False
@@ -2654,6 +2661,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         service._check_channel = Mock()
         service.check_single_channel = Mock(return_value={'success': True})
         teamarr_service = Mock()
+        teamarr_service.validate_queued_check.return_value = None
 
         def pull_entry(timeout):
             service.running = False
@@ -3532,8 +3540,11 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
 
         udi = Mock()
         udi.get_channel_by_id.side_effect = lambda channel_id: {'streams': [{'id': f'{channel_id}-a'}]}
-
-        with patch('apps.udi.get_udi_manager', return_value=udi):
+        teamarr_service = Mock()
+        teamarr_service.validate_queued_check.return_value = None
+        with patch('apps.udi.get_udi_manager', return_value=udi), patch(
+            'apps.stream.teamarr_preflight_service.get_teamarr_preflight_service', return_value=teamarr_service,
+        ):
             service.check_channels_synchronously([101, 102])
 
         self.assertEqual(
@@ -3593,6 +3604,7 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         udi = Mock()
         udi.get_channel_by_id.side_effect = lambda channel_id: {'streams': [{'id': f'{channel_id}-a'}]}
         teamarr_service = Mock()
+        teamarr_service.validate_queued_check.return_value = None
 
         with patch('apps.udi.get_udi_manager', return_value=udi), patch(
             'apps.stream.teamarr_preflight_service.get_teamarr_preflight_service',

@@ -117,3 +117,38 @@ def test_status_etag_revalidates_all_fields_and_never_caches_errors():
     assert changed.status_code == 200 and changed.json['queue']['queued'] == 2
     state['error'] = True
     assert client.get('/api/stream-checker/status', headers={'If-None-Match': etag}).status_code == 503
+
+
+def test_http_sessions_reuse_per_thread_without_retaining_cookies_or_headers(monkeypatch):
+    from apps.core import http_transport
+    import requests
+
+    http_transport.close_thread_sessions()
+    sessions = []
+    real_session = requests.Session
+
+    def session_factory():
+        session = real_session()
+        session.get = Mock(return_value='response')
+        sessions.append(session)
+        return session
+
+    monkeypatch.setattr(http_transport.requests, 'Session', session_factory)
+    try:
+        first = http_transport.get_session('http://connector.invalid/one')
+        first.cookies.set('old', 'cookie')
+        assert http_transport.get('http://connector.invalid/two', headers={'Authorization': 'new'}, timeout=7) == 'response'
+        assert http_transport.get_session('http://connector.invalid/three') is first
+        assert not first.cookies
+        first.get.assert_called_once_with('http://connector.invalid/two', headers={'Authorization': 'new'}, timeout=7)
+        assert 'Authorization' not in first.headers
+        assert first.adapters['http://'].max_retries.total == 0
+        with ThreadPoolExecutor(max_workers=1) as pool:
+            def other_thread():
+                other = http_transport.get_session('http://connector.invalid/one')
+                http_transport.close_thread_sessions()
+                return other
+            assert pool.submit(other_thread).result() is not first
+        assert len(sessions) == 2
+    finally:
+        http_transport.close_thread_sessions()

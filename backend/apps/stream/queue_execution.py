@@ -55,4 +55,69 @@ class StreamCheckQueueExecutionMixin:
                 **single_check_kwargs,
             )
 
-    
+        def record_teamarr_result() -> None:
+            if queue_metadata.get('source') != 'teamarr_preflight':
+                return
+            try:
+                from apps.stream.teamarr_preflight_service import get_teamarr_preflight_service
+
+                get_teamarr_preflight_service().record_queued_check_result(
+                    queue_metadata,
+                    result,
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Failed to record queued Teamarr preflight result for channel %s: %s",
+                    channel_id,
+                    exc,
+                )
+        with self.lock:
+            external_abort_unchanged = (
+                int(getattr(self, '_external_abort_generation', 0))
+                == external_abort_generation
+            )
+            sync_owner_unchanged = bool(
+                owned_sync_generation is None
+                or (
+                    getattr(self, '_sync_batch_execution_active', False)
+                    and getattr(self, '_sync_batch_execution_generation', None)
+                    == owned_sync_generation
+                    and (self.sync_batch_state or {}).get('active')
+                    and (self.sync_batch_state or {}).get('generation')
+                    == owned_sync_generation
+                )
+            )
+            isolate_connectivity_abort = (
+                self._should_isolate_teamarr_connectivity_abort(
+                    queue_metadata,
+                    result,
+                    abort_was_set,
+                    external_abort_unchanged=external_abort_unchanged,
+                    sync_owner_unchanged=sync_owner_unchanged,
+                )
+            )
+            if isolate_connectivity_abort:
+                self.abort_current_check.clear()
+                self._cancel_queueing = False
+        if isolate_connectivity_abort:
+            logger.info(
+                "Isolating Teamarr queued connectivity abort from synchronous batch "
+                "channel_id=%s source=%s",
+                channel_id,
+                queue_metadata.get('source'),
+            )
+        if isinstance(result, dict) and result.get('success') is False:
+            self._fail_channel_check(
+                channel_id,
+                result.get('error') or result.get('reason') or 'single channel check failed',
+                record_teamarr_result,
+                queue_entry_token=queue_entry_token,
+                allow_already_failed_side_effects=True,
+            )
+        else:
+            self._complete_channel_check(
+                channel_id,
+                record_teamarr_result,
+                queue_entry_token=queue_entry_token,
+                allow_already_completed_side_effects=True,
+            )

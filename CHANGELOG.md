@@ -10,7 +10,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Preflight and control-plane efficiency** - Added a [technical dev changelog](docs/dev-efficiency-changelog-20261002.md) covering checkpoint catch-up, queue validation, metadata reads, conditional status polling, and pending validation.
+- **Preflight and control-plane efficiency** - Added a [technical dev changelog](docs/dev-efficiency-changelog-20261002.md) covering checkpoint catch-up, queue validation, metadata reads, conditional status polling, and validation results.
 - **PR #460 change record** - Added a [detailed changelog](docs/pr460-changelog.md) for the reliability, efficiency, security and responsive UI changes proposed against `dev`.
 - **Monitoring intervals** - Monitoring-session create requests now accept bounded evaluation and enforcement intervals (both default to 1,000 ms).
 - **Channel context and UI previews** - Compact Channel rows show effective automation profile state, and six synthetic-data desktop/mobile screenshots document the implemented Dashboard, Channels and Monitoring views.

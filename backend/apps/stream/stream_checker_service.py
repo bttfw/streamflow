@@ -931,73 +931,6 @@ class StreamCheckerService(StreamCheckQueueExecutionMixin, StreamStatsWriterMixi
                 queue_entry_token,
             )
 
-    def record_teamarr_result() -> None:
-            if queue_metadata.get('source') != 'teamarr_preflight':
-                return
-            try:
-                from apps.stream.teamarr_preflight_service import get_teamarr_preflight_service
-
-                get_teamarr_preflight_service().record_queued_check_result(
-                    queue_metadata,
-                    result,
-                )
-            except Exception as exc:
-                logger.warning(
-                    "Failed to record queued Teamarr preflight result for channel %s: %s",
-                    channel_id,
-                    exc,
-                )
-        with self.lock:
-            external_abort_unchanged = (
-                int(getattr(self, '_external_abort_generation', 0))
-                == external_abort_generation
-            )
-            sync_owner_unchanged = bool(
-                owned_sync_generation is None
-                or (
-                    getattr(self, '_sync_batch_execution_active', False)
-                    and getattr(self, '_sync_batch_execution_generation', None)
-                    == owned_sync_generation
-                    and (self.sync_batch_state or {}).get('active')
-                    and (self.sync_batch_state or {}).get('generation')
-                    == owned_sync_generation
-                )
-            )
-            isolate_connectivity_abort = (
-                self._should_isolate_teamarr_connectivity_abort(
-                    queue_metadata,
-                    result,
-                    abort_was_set,
-                    external_abort_unchanged=external_abort_unchanged,
-                    sync_owner_unchanged=sync_owner_unchanged,
-                )
-            )
-            if isolate_connectivity_abort:
-                self.abort_current_check.clear()
-                self._cancel_queueing = False
-        if isolate_connectivity_abort:
-            logger.info(
-                "Isolating Teamarr queued connectivity abort from synchronous batch "
-                "channel_id=%s source=%s",
-                channel_id,
-                queue_metadata.get('source'),
-            )
-        if isinstance(result, dict) and result.get('success') is False:
-            self._fail_channel_check(
-                channel_id,
-                result.get('error') or result.get('reason') or 'single channel check failed',
-                record_teamarr_result,
-                queue_entry_token=queue_entry_token,
-                allow_already_failed_side_effects=True,
-            )
-        else:
-            self._complete_channel_check(
-                channel_id,
-                record_teamarr_result,
-                queue_entry_token=queue_entry_token,
-                allow_already_completed_side_effects=True,
-            )
-
     def _drain_specialized_queue_entries(self, *, max_entries: int = 25) -> int:
         drained = 0
         for _ in range(max(0, int(max_entries))):
@@ -3471,16 +3404,23 @@ class StreamCheckerService(StreamCheckQueueExecutionMixin, StreamStatsWriterMixi
         _threshold_config: Dict[str, Any] = {}
         profile: Optional[Dict[str, Any]] = None
 
+        # A failed metadata read cannot fall through the profile fallback and
+        # launch probes with stale assignments or checked-stream immunity.
         try:
-            automation_config = get_automation_config_manager()
-
-            # Refresh stable-ID source changes before immunity and profile decisions.
             udi = get_udi_manager()
             with STREAM_OPERATION_TIMINGS.measure('metadata_read'):
                 metadata = udi.refresh_channel_metadata(channel_id)
-            if not metadata.get('success'):
-                raise RuntimeError(metadata.get('reason') or 'channel_metadata_unavailable')
+            if not isinstance(metadata, dict) or not metadata.get('success'):
+                raise RuntimeError('channel_metadata_unavailable')
             self.update_tracker.invalidate_checked_streams(channel_id, metadata.get('changed_stream_ids', []))
+        except Exception as exc:
+            logger.warning("Fresh metadata unavailable for channel %s: %s", channel_id, exc)
+            self._fail_channel_check(channel_id, 'channel_metadata_unavailable', queue_entry_token=queue_entry_token)
+            return {'success': False, 'skipped': True, 'skip_reason': 'channel_metadata_unavailable',
+                    'channel_id': channel_id, 'dead_streams_count': 0, 'revived_streams_count': 0}
+
+        try:
+            automation_config = get_automation_config_manager()
             channel = udi.get_channel_by_id(channel_id)
             group_id = channel.get('channel_group_id') if channel else None
 
