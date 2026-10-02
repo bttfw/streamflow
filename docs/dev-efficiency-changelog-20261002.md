@@ -1,7 +1,8 @@
 # Dev reliability and efficiency work - 2026-10-02
 
-Status: draft implementation with passing backend/frontend suites and an initial
-live deployment check. The narrow-table follow-up awaits image deployment.
+Status: draft implementation. Backend/frontend suites, image builds, and live
+DockerMan deployment checks have passed, including the narrow-table correction.
+Validation limits are recorded below.
 
 Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
@@ -88,7 +89,9 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   independently for single-stream and batch preparation.
 - Queue execution and statistics preparation/writing now live in separate
   modules, with shared probe-report field definitions. This is a partial split;
-  the checker service still contains its orchestration and probe logic.
+  the checker service still contains its orchestration and probe logic
+  (10,862 lines at `ce7881e0`). The extracted queue, stats, and shared-field
+  modules contain 123, 262, and 24 lines respectively.
 - Recovery deadlines, provider waits, media-probe elapsed time, and channel/run
   durations use monotonic clocks. Event dates and persisted start timestamps
   continue to use calendar time.
@@ -184,6 +187,25 @@ Linux amd64, built through the existing multi-platform image workflow.
   table rendered all rows. Countdowns advanced, conditional polls reused 304
   payloads, and a 390-pixel viewport reached the score column by horizontal
   scrolling without overlapping columns. Fixture progress was browser-local.
+
+### Final image validation at `ce7881e0`
+
+- Multi-platform image build
+  [36985654777](https://github.com/bttfw/streamflow/actions/runs/36985654777)
+  passed. Backend stable/integration, frontend, and both CodeQL language checks
+  passed in the [PR workflow](https://github.com/krinkuto11/streamflow/actions/runs/36985642265).
+- DockerMan updated the same existing container from its unchanged template to
+  `ghcr.io/bttfw/streamflow:streamflow-efficiency-wip-20261002`. The running image
+  revision is `ce7881e04d0a46e7f6d13e1709e7f9b29823f95a`.
+- The container is healthy and managed by DockerMan. Host configuration, mounts,
+  network attachment, and environment values match the pre-update snapshot;
+  environment comparison accounts for DockerMan changing the order of entries.
+  Readiness completed with 250 channels and 198,320 streams in 83.803 seconds.
+- Repeated page loading and the 500/50/100-row browser fixture passed against the
+  deployed frontend, including the 800-pixel table width and reachable score
+  column at a 390-pixel viewport. No browser exceptions were observed.
+- Repeated status checks preserved changing 200 payloads and unchanged empty-body
+  304 responses. Preflight is running without a current service/Teamarr error.
 
 ## Regression specifications added or updated
 
