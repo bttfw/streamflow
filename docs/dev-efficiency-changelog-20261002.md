@@ -1,8 +1,7 @@
 # Dev reliability and efficiency work - 2026-10-02
 
-Status: draft validation. Targeted backend regressions, isolated integration
-contracts, frontend tests, and the frontend production build have passed. The
-live validation of the new image is pending.
+Status: draft implementation with passing backend/frontend suites and an initial
+live deployment check. The narrow-table follow-up awaits image deployment.
 
 Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
@@ -17,23 +16,23 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
 | # | Change | Implementation status |
 |---|---|---|
-| 1 | Preflight cadence and crossed checkpoints | Implemented; validation pending |
-| 2 | Bounded retry when a channel has no streams yet | Implemented; validation pending |
-| 3 | Validate queued preflight source, channel identity, and expiry | Implemented; validation pending |
-| 4 | Separate dropdown catalogs from due-check admission | Implemented; validation pending |
-| 5 | Cache subscription/sport/league metadata | Implemented; validation pending |
-| 6 | Thread-owned HTTP connection reuse | Implemented; validation pending |
-| 7 | Operation-aware retries and ambiguous POST handling | Implemented; validation pending |
-| 8 | Coalesce concurrent UDI channel refreshes | Implemented; validation pending |
-| 9 | Detect metadata drift with unchanged IDs | Implemented; validation pending |
-| 10 | Monotonic duration/timeout clocks | Implemented; validation pending |
-| 11 | Conditional status responses with ETags | Implemented; validation pending |
-| 12 | Visible, serial, cancellable browser polling | Implemented; validation pending |
-| 13 | Isolated countdowns and visible stream rows | Implemented; validation pending |
-| 14 | Consolidate suitable stats write paths | Implemented; validation pending |
-| 15 | Bound legacy in-memory changelog | Implemented; validation pending |
-| 16 | Extract checker queue/stats responsibilities | Implemented; validation pending |
-| 17 | Separate operation timing summaries | Implemented; validation pending |
+| 1 | Preflight cadence and crossed checkpoints | Implemented; regression tests passed |
+| 2 | Bounded retry when a channel has no streams yet | Implemented; regression tests passed |
+| 3 | Validate queued preflight source, channel identity, and expiry | Implemented; regression tests passed |
+| 4 | Separate dropdown catalogs from due-check admission | Implemented; regression tests passed |
+| 5 | Cache subscription/sport/league metadata | Implemented; regression tests passed |
+| 6 | Thread-owned HTTP connection reuse | Implemented; regression tests passed |
+| 7 | Operation-aware retries and ambiguous POST handling | Implemented; regression tests passed |
+| 8 | Coalesce concurrent UDI channel refreshes | Implemented; regression tests passed |
+| 9 | Detect metadata drift with unchanged IDs | Implemented; regression tests passed |
+| 10 | Monotonic duration/timeout clocks | Implemented; regression tests passed |
+| 11 | Conditional status responses with ETags | Tests and live 200/304 checks passed |
+| 12 | Visible, serial, cancellable browser polling | Implemented; regression tests passed |
+| 13 | Isolated countdowns and visible stream rows | Tests and browser fixtures passed |
+| 14 | Consolidate suitable stats write paths | Implemented; regression tests passed |
+| 15 | Bound legacy in-memory changelog | Implemented; regression tests passed |
+| 16 | Extract checker queue/stats responsibilities | Implemented; regression tests passed |
+| 17 | Separate operation timing summaries | Implemented; regression tests passed |
 
 ## Implementation changes
 
@@ -88,7 +87,8 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   partial failures remain counted separately. Payload filtering is preserved
   independently for single-stream and batch preparation.
 - Queue execution and statistics preparation/writing now live in separate
-  modules, with shared probe-report field definitions.
+  modules, with shared probe-report field definitions. This is a partial split;
+  the checker service still contains its orchestration and probe logic.
 - Recovery deadlines, provider waits, media-probe elapsed time, and channel/run
   durations use monotonic clocks. Event dates and persisted start timestamps
   continue to use calendar time.
@@ -104,7 +104,9 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 - Dashboard, Stream Checker, and Teamarr Preflight polling pause on hidden tabs,
   cancel reads on hide/unmount, serialize requests, and refresh on return.
 - Stream countdowns update isolated cells. Tables with at least 100 streams
-  render the visible range plus overscan, measuring variable row heights.
+  render the visible range plus overscan, measuring variable row heights. A
+  minimum table width keeps columns readable on narrow displays; horizontal
+  scrolling exposes all columns without overlapping cell contents.
 
 ## Validation corrections - 2026-10-02
 
@@ -130,21 +132,58 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   reported by the dependency audit. Wheel/source hashes come from the
   [official release metadata](https://pypi.org/project/urllib3/2.8.0/).
 
+- Fixed overlapping stream-table columns on narrow displays. The table retains
+  an 800-pixel minimum width with horizontally scrollable content and adjusted
+  column proportions; the final score column remains reachable at 390 pixels.
+
 ## Recorded validation
 
-Local environment: Windows, Python 3.12.10, Node 24.15.0.
+Local environment: Windows, Python 3.12.10, Node 24.15.0. Production image:
+Linux amd64, built through the existing multi-platform image workflow.
 
 - Backend compilation: passed (`python -m compileall -q backend/apps`).
 - Targeted regression/preflight/connectivity tests: 123 passed.
 - Isolated integration contracts: 57 passed, 1 skipped.
-- Frontend: 295 tests passed across 39 files; production build passed.
+- Complete stable backend suite: 1,984 passed, 1 skipped.
+- Complete non-live backend suite with the locked `urllib3` 2.8.0:
+  2,041 passed, 1 skipped, 1 live test deselected.
+- Frontend: 295 tests passed across 39 files; production build passed, including
+  the narrow-table correction.
+- Python production dependency audit: no known vulnerabilities reported.
 - Frontend dependency audit: high-severity gate passed; two existing moderate
   React Router findings remain. No forced major-version upgrade is included.
-- Complete stable backend suite: 1,984 passed, 1 skipped.
-- Upgraded HTTP dependency: 32 focused tests passed with `urllib3` 2.8.0;
-  the production Python dependency audit reports no known vulnerabilities.
-- Live validation of the new image: pending. Existing deployment baseline pages
-  load without browser exceptions; that baseline is not evidence for this image.
+- PR checks at `6a367c35`: backend stable/integration, frontend, and both CodeQL
+  languages passed. Image build
+  [36982311277](https://github.com/bttfw/streamflow/actions/runs/36982311277)
+  passed for amd64 and arm64.
+
+### Initial live deployment at `6a367c35`
+
+- Updated the existing container through Unraid's native DockerMan
+  `update_container` routine, using its existing user template. Only the image
+  repository/tag changed; network attachment, mounts, environment hash, and
+  NVIDIA runtime matched the pre-update configuration. No additional container
+  was installed. The previous template/image and a consistent SQLite/application
+  data backup were retained before the update.
+- Container became healthy; readiness reached 250/250 channels and
+  198,320/198,320 streams after the initial refresh (87.183 seconds).
+- Existing Dashboard, Stream Checker, and Teamarr Preflight pages loaded without
+  browser exceptions. Teamarr source/catalog reads completed with no current
+  preflight error. Connector configuration was not modified.
+- Live progress, preflight, Shadow Monitor, and UDI-refresh status endpoints
+  returned empty-body 304 responses for matching ETags. Changing checker status
+  returned 200, preserving the current payload.
+- Query-only diagnostics inside the existing container refreshed three stream
+  records through the configured connector. A deliberately stale local URL was
+  corrected with its indexes. Real queued-source validation accepted a current
+  entry; isolated expired/reused-identity fixtures skipped as expected. An
+  injected source timeout deferred the entry and released its attempt marker.
+  These diagnostics performed no configuration, assignment, or statistics writes.
+- Browser response fixtures exercised 500, 50, and 100 stream rows. The 500-row
+  table rendered 16 rows at the initial and bottom positions, while the 50-row
+  table rendered all rows. Countdowns advanced, conditional polls reused 304
+  payloads, and a 390-pixel viewport reached the score column by horizontal
+  scrolling without overlapping columns. Fixture progress was browser-local.
 
 ## Regression specifications added or updated
 
@@ -171,16 +210,17 @@ Executed locally during draft validation:
 - Existing preflight/checker statistics tests and provider fixtures are adapted
   to the extracted writer and fresh metadata boundary.
 
-## Required runtime validation
+## Validation limits
 
-- Backend targeted regressions, then relevant checker/UDI/preflight suites.
-- Frontend tests and production build; inspect small and large stream tables,
-  changing row order/heights, countdowns, and narrow viewports.
-- Verify conditional 200/304 transitions across queue/progress changes and
-  mutations; hide/return/unmount during an in-flight request.
-- Live Unraid validation against existing connector APIs: late scans, no-stream
-  retries, queued expiry, transient outages, provider admission, and write-back.
-- Compare added targeted metadata-read cost against saved duplicate reads and
-  connection reuse. Timing samples are instrumentation, not a measured speedup.
-
-Performance timing samples remain instrumentation; no production speedup is claimed.
+- Native browser hide/return transitions could not be reproduced in this test
+  environment; cancellation, serialization, and return behavior passed the
+  dedicated poller tests. Live page loading and conditional polling were checked
+  with the available standalone browser.
+- Missing-stream retries, delayed checkpoint admission, ambiguous POST handling,
+  provider admission, and partial write failures were covered by regressions and
+  isolated contracts. No forced destructive connector write or live provider
+  failure was introduced for this validation.
+- Operation timing samples are instrumentation. The balance between added fresh
+  metadata reads, fewer duplicate reads, and connection reuse has not been
+  benchmarked against representative production workloads; no measured speedup
+  is claimed.

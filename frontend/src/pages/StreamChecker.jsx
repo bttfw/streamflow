@@ -928,8 +928,8 @@ export default function StreamChecker() {
                 <div className="mt-4">
                   <Label className="text-sm font-semibold mb-2 block">Stream Progress Tracking</Label>
                   <div className="rounded-md border overflow-y-auto w-full" style={{ maxHeight: `${tableMaxHeight}px` }}>
-                    <table className="w-full text-sm text-left table-fixed" aria-rowcount={sortedStreams.length + 1}>
-                      <colgroup>{[30, 16, 20, 10, 18, 6].map(width => <col key={width} style={{ width: `${width}%` }} />)}</colgroup>
+                    <table className="w-full min-w-[800px] text-sm text-left table-fixed" aria-rowcount={sortedStreams.length + 1}>
+                      <colgroup>{[28, 16, 18, 12, 18, 8].map((width, index) => <col key={index} style={{ width: `${width}%` }} />)}</colgroup>
                       <thead className="bg-muted sticky top-0 z-10 text-xs text-muted-foreground uppercase h-8">
                         <tr>
                           <th className="px-3 py-1 font-medium">Stream</th>

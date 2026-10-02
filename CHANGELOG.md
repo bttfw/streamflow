@@ -35,6 +35,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Stream Checker ETA wording** - Provider-limited or floor-based estimates now display as `Rough ETA` with a tooltip explaining expected swings between long channel waits.
 
 ### Fixed
+- **Stream progress table on narrow screens** - Keep virtualized columns readable with a minimum table width and horizontal scrolling instead of overlapping account, status, countdown and quality cells.
 - **Ambiguous creation responses** - Reconcile newly created channels after uncertain POST outcomes and suppress unconfirmed non-idempotent replays. Legacy changelog memory is bounded.
 - **Reported old streams retained after a check** - Stream-limit removals were misread as UDI cache misses and appended again. Concurrent and sequential write-back now protect genuine cache misses, then enforce the limit while preserving active-viewer streams; the original reporter's instance remains unverified.
 - **PR #460 run and assignment correctness** - Matching worker, validation, inventory and Dispatcharr write failures report failure; single-channel Step 4/5/6 errors stop later work. Channel assignments use per-channel serialization, authoritative preflight and readback.
@@ -75,6 +76,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Narrower browser work** - Single-channel matching evaluates one channel's rules; Stream Checker avoids redundant progress/settings requests, and Monitoring loads charts and details when opened. Earlier path benchmarks and their scope are in the [PR #460 changelog](docs/pr460-changelog.md).
 
 ### Security
+- **HTTP dependency lock** - Update the production and test `urllib3` hash locks to 2.8.0 to resolve the dependency audit findings.
 - **Bounded logo retrieval** - Logo URLs, redirects, response type and image bytes are validated before caching; local/metadata targets are restricted, the cache is bounded, and cached SVG/image responses receive defensive headers while supported LAN and Dispatcharr-relative logos remain usable.
 - **Safe API error responses** - Rejected logos return a generic 422 message. Manual stream discovery exposes validated numeric assignment counts on success and generic 409/500 failure responses with a safe partial-write flag, without echoing provider URLs or internal exception detail.
 
