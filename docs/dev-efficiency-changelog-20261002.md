@@ -1,8 +1,9 @@
 # Dev reliability and efficiency work - 2026-10-02
 
-Status: draft implementation. Backend/frontend suites, image builds, and live
-DockerMan deployment checks have passed, including the narrow-table correction.
-Validation limits are recorded below.
+Status: draft implementation. Post-split backend/frontend suites and image
+builds passed. The new checker source passed isolated diagnostics on Unraid;
+deployment of the new image remains pending during the active quality batch.
+Earlier DockerMan deployment checks passed. Validation limits are below.
 
 Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
@@ -252,7 +253,7 @@ Executed locally during draft validation:
 
 ## Checker decomposition follow-up - 2026-10-02
 
-- Reduced `stream_checker_service.py` from 10,862 to 906 lines by moving 113
+- Reduced `stream_checker_service.py` from 10,862 to 907 lines by moving 113
   methods into the `apps.stream.checker` package. The facade retains construction,
   lifecycle/worker dispatch, configuration updates, and its public singleton.
 - Queue ownership, capacity/inventory, classification, bitrate rechecks,
@@ -270,8 +271,25 @@ Executed locally during draft validation:
   backend suite passed 2,041 tests, with 1 skipped and 1 live test deselected.
   All 295 frontend tests passed across 39 files; production build and complete
   backend compilation passed.
-- Image/runtime validation of this decomposition is pending. Boundaries are
-  documented in [Stream Checker architecture](stream-checker-architecture.md).
+- Backend stable/integration, frontend and both CodeQL checks passed at
+  `756c3b83` in [PR test run 36992134059](https://github.com/krinkuto11/streamflow/actions/runs/36992134059)
+  and [CodeQL run 36992134065](https://github.com/krinkuto11/streamflow/actions/runs/36992134065).
+- The amd64/arm64 image built successfully at `756c3b83` in
+  [run 36992149399](https://github.com/bttfw/streamflow/actions/runs/36992149399).
+- An isolated process in the existing Unraid container loaded the new source
+  from a temporary directory without changing the running application. All 20
+  checker submodules imported; callable identity, deep progress snapshots,
+  stale/aborted publication rejection, released-profile cleanup, shared recheck
+  locks and heartbeat start/stop checks passed. No media probe was launched.
+- Query-only diagnostics with the new source read three existing stream
+  records, repaired deliberately stale local metadata/indexes, accepted a
+  current queued source, skipped expiry/UUID reuse, and deferred an injected
+  source timeout while releasing its attempt marker. Configuration access used
+  read-only SQLite; no configuration, assignment or statistics writes occurred.
+- The isolated diagnostics validate the source on Unraid; they do not replace
+  deployment/readiness/UI checks of the new image through DockerMan. Those
+  checks remain pending while the existing full quality batch is active.
+  Boundaries are documented in [Stream Checker architecture](stream-checker-architecture.md).
 
 ## Validation limits
 
