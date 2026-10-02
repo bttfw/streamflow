@@ -244,6 +244,11 @@ Executed locally during draft validation:
   Browser fixtures checked a restored value of 3 and its update to 0, five
   metrics in one desktop row, and three wrapped mobile rows at 390 pixels,
   without browser exceptions or clipped labels.
+- The follow-up image built successfully for amd64/arm64 in
+  [run 36987926439](https://github.com/bttfw/streamflow/actions/runs/36987926439),
+  at code revision `0715f956`. Deployment/live verification of this UI follow-up
+  remains pending while the existing checker batch is active; the running image
+  remains at `ce7881e0`.
 
 ## Validation limits
 
