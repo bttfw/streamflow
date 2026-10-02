@@ -1,9 +1,9 @@
 # Dev reliability and efficiency work - 2026-10-02
 
-Status: draft implementation. Post-split backend/frontend suites and image
-builds passed. The new checker source passed isolated diagnostics on Unraid;
-deployment of the new image remains pending during the active quality batch.
-Earlier DockerMan deployment checks passed. Validation limits are below.
+Status: draft implementation, deployed and validated on Unraid. Post-split
+backend/frontend suites, image builds and native DockerMan deployment passed.
+Readiness, UI, conditional polling and a real Teamarr preflight completed on
+the new image. Validation limits are below.
 
 Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 
@@ -247,9 +247,9 @@ Executed locally during draft validation:
   without browser exceptions or clipped labels.
 - The follow-up image built successfully for amd64/arm64 in
   [run 36987926439](https://github.com/bttfw/streamflow/actions/runs/36987926439),
-  at code revision `0715f956`. Deployment/live verification of this UI follow-up
-  remains pending while the existing checker batch is active; the running image
-  remains at `ce7881e0`.
+  at code revision `0715f956`. This UI follow-up is included in the deployed
+  checker-split image at `756c3b83`. The desktop/mobile fixtures passed again
+  against that image, including restored values 3 and 0.
 
 ## Checker decomposition follow-up - 2026-10-02
 
@@ -286,10 +286,42 @@ Executed locally during draft validation:
   current queued source, skipped expiry/UUID reuse, and deferred an injected
   source timeout while releasing its attempt marker. Configuration access used
   read-only SQLite; no configuration, assignment or statistics writes occurred.
-- The isolated diagnostics validate the source on Unraid; they do not replace
-  deployment/readiness/UI checks of the new image through DockerMan. Those
-  checks remain pending while the existing full quality batch is active.
-  Boundaries are documented in [Stream Checker architecture](stream-checker-architecture.md).
+- Subsequent native DockerMan deployment and runtime checks passed as recorded
+  below. Boundaries are documented in
+  [Stream Checker architecture](stream-checker-architecture.md).
+
+### Deployed split validation at `756c3b83`
+
+- The existing container was updated through Unraid's native DockerMan updater
+  using its unchanged GUI-editable template. A fresh consistent SQLite/config
+  backup and template backup were created beforehand. The running image revision
+  is `756c3b83968b9d88cf94843de0d2123621f69e36`; it is healthy and DockerMan-managed.
+- Host configuration, network attachment, mounts, environment values and NVIDIA
+  runtime match the pre-update snapshot. No additional container was installed.
+- Readiness returned 200 after startup loaded 239/239 channels and
+  198,323/198,323 streams in 85.930 seconds. All required workers reported ready,
+  including Stream Checker, automation and Teamarr Preflight.
+- Hashes of the facade and all 21 checker package files in the running image
+  match the reviewed source. Diagnostics using those installed modules passed
+  callable identity, snapshot/publication guards, shared locks and heartbeat
+  shutdown. Query-only checks read five real stream records and passed fresh
+  metadata/index repair and queued-source validation without configuration,
+  assignment or statistics writes.
+- A normal Teamarr preflight completed on the deployed image: telemetry run
+  `6496`, channel `11724`, seven streams, 89 seconds, `job_outcome=completed`.
+  Runtime logs also show the parallel scheduler and media-analysis path; no
+  NameError, ImportError, ModuleNotFoundError or AttributeError was observed.
+- Dashboard, Stream Checker and Teamarr Preflight loaded without browser
+  exceptions. Fixtures against the deployed frontend passed bounded 500-row
+  rendering (16 visible rows), the 50/100-row cases, advancing countdowns,
+  conditional 304 reuse, and reachable mobile columns at 390 pixels.
+- Dashboard fixtures confirmed five quick metrics in one desktop row and three
+  wrapped rows on mobile, with `Channels Restored` changing from 3 to 0. These
+  fixture values are synthetic; the production counter retains existing run
+  semantics.
+- Five live status endpoints preserved changing 200 payloads and unchanged
+  empty-body 304 responses. Teamarr Preflight reported no current service or
+  Teamarr error. The regular automatic run continued after restart.
 
 ## Validation limits
 
@@ -305,3 +337,6 @@ Executed locally during draft validation:
   metadata reads, fewer duplicate reads, and connection reuse has not been
   benchmarked against representative production workloads; no measured speedup
   is claimed.
+- Live validation covered startup, UI and a completed seven-stream preflight.
+  The restarted scheduled 222-channel quality run continues independently; its
+  final result is not included in this validation record.
