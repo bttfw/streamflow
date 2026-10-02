@@ -436,7 +436,7 @@ class CheckerStatusMixin:
             queue_status['eta_active_stream_workers'] = worker_context['active']
         if worker_context['waiting'] > 0:
             queue_status['eta_provider_waiting_streams'] = worker_context['waiting']
-        
+
         with self.lock:
             sync_state = dict(self.sync_batch_state)
             single_channel_check_active = bool(
@@ -451,7 +451,7 @@ class CheckerStatusMixin:
             queue_execution_active = bool(
                 getattr(self, '_active_queue_entry_executions', {})
             )
-            
+
         if sync_state.get('active'):
             # Override queue status with our synchronous batch status
             # When active, ONLY the sync batch progress should be displayed
@@ -490,7 +490,7 @@ class CheckerStatusMixin:
                 queue_status['state'] = 'completed'
             else:
                 queue_status['state'] = 'idle'
-            
+
             # Map tracking stream properties back over queue_status for calculations
             queue_status['queued_streams_count'] = sync_state.get('queued_streams_count', 0)
             queue_status['in_progress_streams_count'] = sync_state.get('in_progress_streams_count', 0)
@@ -501,14 +501,14 @@ class CheckerStatusMixin:
             queue_status['channels_hidden'] = sync_state.get('channels_hidden', 0)
             queue_status['channels_ready'] = sync_state.get('channels_ready', 0)
             queue_status['channel_visibility_changed'] = sync_state.get('channel_visibility_changed', 0)
-            
+
             # Use real queue averages if available, otherwise 0
             queue_snapshot = self.check_queue.get_status()
             queue_status['avg_stream_process_time_sec'] = queue_snapshot.get('avg_stream_process_time_sec', 0)
             queue_status['avg_channel_process_time_sec'] = queue_snapshot.get('avg_channel_process_time_sec', 0)
-            
+
         queue_status['eta_seconds'] = self._calculate_queue_eta_seconds(queue_status)
-        
+
         queued_waiting = queue_status.get('queue_size', 0) > 0
         queue_processing = bool(
             queue_status.get('in_progress', 0) > 0 or
@@ -574,7 +574,7 @@ class CheckerStatusMixin:
             queue_status=queue_status,
             progress=progress,
         )
-        
+
         return {
             'running': self.running,
             'checking': bool(self.checking or queue_execution_active),

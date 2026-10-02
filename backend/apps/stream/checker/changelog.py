@@ -63,7 +63,7 @@ class CheckerChangelogMixin:
         batch_generation: Optional[int] = None,
     ) -> bool:
         """Add a channel check result to the current batch.
-        
+
         Args:
             channel_entry: Dictionary containing channel check results
             batch_generation: Optional generation token returned by
@@ -173,20 +173,20 @@ class CheckerChangelogMixin:
                 self.batch_changelog_entries = []
                 self._active_batch_changelog_generation = None
                 return False
-            
+
             if not self.changelog:
                 logger.debug("Changelog not available, skipping batch finalization")
                 self.batch_start_time = None
                 self.batch_changelog_entries = []
                 self._active_batch_changelog_generation = None
                 return False
-            
+
             try:
                 # Calculate duration
                 start_dt = datetime.fromisoformat(self.batch_start_time)
                 end_dt = datetime.now()
                 duration_seconds = int((end_dt - start_dt).total_seconds())
-                
+
                 # Format duration as human-readable string
                 if duration_seconds < 60:
                     duration_str = f"{duration_seconds}s"
@@ -198,7 +198,7 @@ class CheckerChangelogMixin:
                     hours = duration_seconds // 3600
                     minutes = (duration_seconds % 3600) // 60
                     duration_str = f"{hours}h {minutes}m"
-                
+
                 # Calculate aggregate stats
                 total_channels = len(self.batch_changelog_entries)
                 total_streams = sum(entry.get('total_streams', 0) for entry in self.batch_changelog_entries)
@@ -213,7 +213,7 @@ class CheckerChangelogMixin:
                 )
                 successful_checks = sum(1 for entry in self.batch_changelog_entries if entry.get('success', False))
                 failed_checks = total_channels - successful_checks
-                
+
                 # Prepare subentries in the format expected by the UI
                 subentries = [{
                     "group": "check",
@@ -240,7 +240,7 @@ class CheckerChangelogMixin:
                         for entry in self.batch_changelog_entries
                     ]
                 }]
-                
+
                 # Create consolidated changelog entry
                 self.changelog.add_entry(
                     action='batch_stream_check',
@@ -261,13 +261,13 @@ class CheckerChangelogMixin:
                     timestamp=self.batch_start_time,
                     subentries=subentries
                 )
-                
+
                 logger.info(f"Finalized batch changelog: {total_channels} channels, {streams_analyzed} streams analyzed in {duration_str}")
-                
-                # Note: trigger_channel_re_enabling and trigger_empty_channel_disabling 
-                # have been deprecated as they relied on Dispatcharr channel profiles 
+
+                # Note: trigger_channel_re_enabling and trigger_empty_channel_disabling
+                # have been deprecated as they relied on Dispatcharr channel profiles
                 # which have been removed.
-                
+
                 return True
             except Exception as e:
                 logger.error(f"Failed to finalize batch changelog: {e}", exc_info=True)

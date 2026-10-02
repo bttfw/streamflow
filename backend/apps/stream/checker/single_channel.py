@@ -28,7 +28,7 @@ class CheckerSingleChannelMixin:
         _queue_entry_token: Optional[int] = None,
     ) -> Dict:
         """Check a single channel immediately and return results.
-        
+
         This performs a targeted channel refresh for a single channel:
         - Identifies M3U accounts used by the channel
         - Refreshes playlists for accounts associated with the channel
@@ -38,14 +38,14 @@ class CheckerSingleChannelMixin:
         - Detects newly dead streams and marks them (if checking is enabled)
         - Detects revived streams and marks them as alive (if checking is enabled)
         - Removes dead streams from the channel (if checking is enabled)
-        
+
         Note: This now works like Global Action but only for the specified channel.
         Dead streams for other channels are not affected.
-        
+
         Channel settings (matching_mode and checking_mode) are respected:
         - If matching_mode is disabled, stream matching is skipped
         - If checking_mode is disabled, stream quality checking is skipped
-        
+
         Args:
             channel_id: ID of the channel to check
             program_name: Optional program name if this is a scheduled EPG check
@@ -54,7 +54,7 @@ class CheckerSingleChannelMixin:
             provider_limit_override: If True, bypass provider/profile capacity
                 skips while still protecting active viewers.
             run_mode: Optional progress context label for specialized callers.
-            
+
         Returns:
             Dict with check results and statistics
         """
@@ -86,7 +86,7 @@ class CheckerSingleChannelMixin:
                 channel_id,
                 _queue_entry_token,
             )
-        
+
         try:
             progress_owner_active, operation_progress_generation = (
                 self._capture_operation_progress_generation()
@@ -103,7 +103,7 @@ class CheckerSingleChannelMixin:
             if abort_result:
                 return abort_result
             logger.info(f"Starting single channel check for channel {channel_id}")
-            
+
             # Get channel info from UDI
             udi = self._checker_get_udi_manager()
             udi.set_automation_busy()
@@ -112,7 +112,7 @@ class CheckerSingleChannelMixin:
                 error_msg = f"Channel {channel_id} not found"
                 logger.error(error_msg)
                 return {'success': False, 'error': error_msg}
-            
+
             channel_name = channel.get('name', f'Channel {channel_id}')
             abort_result = self._abort_channel_check_if_requested(
                 channel_id,
@@ -121,11 +121,11 @@ class CheckerSingleChannelMixin:
             )
             if abort_result:
                 return abort_result
-            
+
             # Check if channel is in active monitoring session (coordination with monitoring system)
             session_manager = self._checker_get_session_manager()
             channels_in_monitoring = session_manager.get_channels_in_active_sessions()
-            
+
             if channel_id in channels_in_monitoring:
                 logger.info(f"⏸ Skipping channel {channel_name} (ID: {channel_id}) - currently in active monitoring session")
                 return {
@@ -136,11 +136,11 @@ class CheckerSingleChannelMixin:
                     'channel_id': channel_id,
                     'channel_name': channel_name
                 }
-            
+
             # Check channel settings for matching and checking modes
             # Check channel settings for matching and checking modes via Automation Profiles
             automation_config = self._checker_get_automation_config_manager()
-            
+
             # channel dict is available in local scope
             channel_group_id = channel.get('channel_group_id')
 
@@ -332,7 +332,7 @@ class CheckerSingleChannelMixin:
                         'channel_name': channel_name,
                         'details': limit_check_result
                     }
-            
+
             # Step 1: Identify M3U accounts for channel (reusing current_streams from limit check above)
             logger.info(f"Step 1/6: Identifying M3U accounts for channel {channel_name}...")
             update_single_channel_progress(
@@ -348,7 +348,7 @@ class CheckerSingleChannelMixin:
                     m3u_account = self._get_stream_m3u_account_id(stream)
                     if m3u_account:
                         account_ids.add(m3u_account)
-            
+
             # Also check dead streams for this channel to find M3U accounts
             # This fixes the bug where channels with all dead streams couldn't refresh their playlists
             dead_streams = self.dead_streams_tracker.get_dead_streams_for_channel(channel_id)
@@ -365,7 +365,7 @@ class CheckerSingleChannelMixin:
                                 f"Found M3U account {m3u_account} from dead stream "
                                 f"{stream_ref(stream_id, dead_url)}"
                             )
-            
+
             # Step 2a: Provider fetch — only if m3u_update is enabled in the profile.
             #
             if m3u_update_enabled:
@@ -532,7 +532,7 @@ class CheckerSingleChannelMixin:
             # All writes (assignments, quality scores, stream ordering) go to Dispatcharr
             # in real time during Steps 4-6. A background UDI sync fires after this
             # function returns to pull those writes back into the cache for the next run.
-            
+
             # Step 3: Remove stale dead-stream tracker entries whose URLs no longer exist
             # in the current playlist. This handles the URL-rotation case where a
             # provider assigns new stream IDs/URLs to the same logical streams after a
@@ -588,7 +588,7 @@ class CheckerSingleChannelMixin:
                     logger.debug("Step 3/6: No stale dead stream URLs to clean")
             except Exception as e:
                 logger.error(f"✗ Failed to clean stale dead streams: {e}", exc_info=True)
-            
+
             # Step 4: Validate existing streams against regex patterns (if matching is enabled)
             if matching_enabled:
                 logger.info(f"Step 4/6: Validating existing streams for channel {channel_name}...")
@@ -623,7 +623,7 @@ class CheckerSingleChannelMixin:
                     )
                     if abort_result:
                         return abort_result
-                    
+
                     # Run validation scoped to this channel only
                     validation_results = automation_manager.validate_and_remove_non_matching_streams(channel_id=channel_id)
                     if not isinstance(validation_results, dict) or (
@@ -678,7 +678,7 @@ class CheckerSingleChannelMixin:
                     "Skipping stream validation",
                     "Stream matching is disabled by the selected profile",
                 )
-            
+
             # Step 5: Re-match and assign streams for this specific channel (if matching is enabled)
             # With stale dead-stream URLs cleaned, streams with new URLs can be re-matched.
             #
@@ -729,7 +729,7 @@ class CheckerSingleChannelMixin:
                     )
                     if abort_result:
                         return abort_result
-                    
+
                     # Run discovery scoped to this channel only.
                     # Pass allow_dead_streams so the matching step honours the same
                     # dead-stream policy as the checking step (Bug 3 fix).
@@ -786,7 +786,7 @@ class CheckerSingleChannelMixin:
                     "Skipping stream matching",
                     "Stream matching is disabled by the selected profile",
                 )
-            
+
             # After matching writes new assignments to Dispatcharr, refresh only this
             # channel's cache entry so Step 6 sees the updated stream list.
             # This is a targeted single-channel read — not a full stream pool fetch.
@@ -800,7 +800,7 @@ class CheckerSingleChannelMixin:
                     return abort_result
                 udi.refresh_channel_by_id(channel_id)
                 logger.debug("✓ Channel cache entry updated with latest stream assignments")
-            
+
             # Step 6: Perform the stream check (if checking is enabled)
             #
             # Resolve the profile ID to pass to _check_channel. When check_single_channel
@@ -834,7 +834,7 @@ class CheckerSingleChannelMixin:
                     "Quality checking streams",
                     f"Checking stream quality for {channel_name}",
                 )
-                
+
                 # Perform the check using normal profile logic.
                 # Returns dict with dead_streams_count and revived_streams_count
                 # Skip batch changelog since this is a single channel check
@@ -894,7 +894,7 @@ class CheckerSingleChannelMixin:
                 )
                 if abort_result:
                     return abort_result
-                
+
                 # Get the count of dead streams that were removed during the check
                 dead_count = check_result.get('dead_streams_count', 0)
 
@@ -922,7 +922,7 @@ class CheckerSingleChannelMixin:
                     "Stream quality checking is disabled by the selected profile",
                 )
                 analyzed_lookup = {}
-            
+
             # Gather statistics after check using cached channel data.
             #
             # fetch_channel_streams reads from the UDI in-memory cache — no network call.
@@ -939,10 +939,10 @@ class CheckerSingleChannelMixin:
             if abort_result:
                 return abort_result
             total_streams = len(streams)
-            
+
             # Calculate channel averages using centralized function
             channel_averages = calculate_channel_averages(streams, dead_stream_ids=set())
-            
+
             check_stats = {
                 'total_streams': total_streams,
                 'dead_streams': dead_count,
@@ -959,7 +959,7 @@ class CheckerSingleChannelMixin:
                 'stream_details': [],
                 'skipped_streams': check_result.get('skipped_streams', []) if checking_enabled else [],
             }
-            
+
             # Sort streams by persisted quality_score descending so the
             # highest-ranked streams (including any that were loop-probed)
             # appear first. No arbitrary cap — all streams are included so
@@ -976,7 +976,7 @@ class CheckerSingleChannelMixin:
                 detail_stats_source = self._current_probe_stats_source(stream, analyzed)
                 extracted_stats = extract_stream_stats(detail_stats_source)
                 formatted_stats = format_stream_stats_for_display(extracted_stats)
-                
+
                 # Calculate score for this stream using its stats
                 # The score needs to be calculated from the stream_stats data stored in Dispatcharr
                 stream_stats = stream.get('stream_stats', {})
@@ -989,7 +989,7 @@ class CheckerSingleChannelMixin:
                             stream_stats = {}
                     except json.JSONDecodeError:
                         stream_stats = {}
-                
+
                 # Build stream data dict for score calculation
                 score_data = {
                     'stream_id': stream.get('id'),
@@ -1004,7 +1004,7 @@ class CheckerSingleChannelMixin:
                     'freeze_probe_ran': stream_stats.get('freeze_probe_ran', False),
                     'freeze_detected': stream_stats.get('freeze_detected', False),
                 }
-                
+
                 # Calculate score — prefer the in-memory score from the check run
                 # which already reflects loop penalties, priority weights, and profile
                 # settings at the time of the check. Recalculate only as a fallback
@@ -1023,7 +1023,7 @@ class CheckerSingleChannelMixin:
                     m3u_account_id = self._get_stream_m3u_account_id(stream)
                     if m3u_account_id:
                         m3u_account_name = self._get_m3u_account_name(stream.get('id'), udi)
-                
+
                 # Build stream detail dict — include loop results if persisted
                 stream_detail = {
                     'stream_id': stream.get('id'),
@@ -1156,7 +1156,7 @@ class CheckerSingleChannelMixin:
             )
             end_time = time_module.time()
             duration_seconds = int(time_module.monotonic() - started_monotonic)
-            
+
             # Format duration as human-readable string
             if duration_seconds < 60:
                 duration_str = f"{duration_seconds}s"
@@ -1168,7 +1168,7 @@ class CheckerSingleChannelMixin:
                 hours = duration_seconds // 3600
                 minutes = (duration_seconds % 3600) // 60
                 duration_str = f"{hours}h {minutes}m"
-            
+
             # Add duration to check stats
             check_stats['duration'] = duration_str
             check_stats['duration_seconds'] = duration_seconds
@@ -1228,7 +1228,7 @@ class CheckerSingleChannelMixin:
                     logo_id = channel.get('logo_id')
                     if logo_id:
                         logo_url = f"/api/logos/{logo_id}"
-                    
+
                     self.changelog.add_single_channel_check_entry(
                         channel_id=channel_id,
                         channel_name=channel_name,
@@ -1238,9 +1238,9 @@ class CheckerSingleChannelMixin:
                     )
                 except Exception as e:
                     logger.warning(f"Failed to add changelog entry: {e}")
-            
+
             logger.info(f"✓ Single channel check completed for {channel_name} in {duration_str}")
-            
+
             abort_result = self._abort_channel_check_if_requested(
                 channel_id,
                 channel_name,
@@ -1307,7 +1307,7 @@ class CheckerSingleChannelMixin:
                 'channel_visibility_changed': check_stats.get('channel_visibility_changed'),
                 'stats': check_stats
             }
-            
+
         except Exception:
             logger.error(
                 "Error checking single channel %s",

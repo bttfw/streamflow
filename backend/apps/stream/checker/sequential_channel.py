@@ -29,7 +29,7 @@ class CheckerSequentialChannelMixin:
         queue_entry_token: Optional[int] = None,
     ):
         """Check and reorder streams for a specific channel using sequential checking.
-        
+
         Args:
             channel_id: ID of the channel to check
             skip_batch_changelog: If True, don't add this check to the batch changelog
@@ -72,12 +72,12 @@ class CheckerSequentialChannelMixin:
         start_time = time_module.time()
         started_monotonic = time_module.monotonic()
         log_function_call(logger, "_check_channel_sequential", channel_id=channel_id)
-        
+
         log_state_change(logger, f"channel_{channel_id}", "queued", "checking")
         logger.info(f"=" * 80)
         logger.info(f"Checking channel {channel_id} (sequential mode)")
         logger.info(f"=" * 80)
-        
+
         # Default to False (safe: do not remove) until the profile is resolved below.
         # If profile resolution fails, streams are left in place rather than silently removed.
         dead_stream_removal_enabled = False
@@ -187,7 +187,7 @@ class CheckerSequentialChannelMixin:
                 step_detail='Retrieving channel data from UDI',
                 **profile_progress_context,
             )
-            
+
             udi = self._checker_get_udi_manager()
             base_url = self._checker_get_base_url()
             logger.debug(f"Fetching channel data for channel {channel_id} from UDI")
@@ -195,7 +195,7 @@ class CheckerSequentialChannelMixin:
             if not channel_data:
                 logger.error(f"UDI returned None for channel {channel_id}")
                 raise Exception(f"Could not fetch channel {channel_id}")
-            
+
             channel_name = channel_data.get('name', f'Channel {channel_id}')
             abort_result = self._abort_channel_check_if_requested(
                 channel_id,
@@ -204,7 +204,7 @@ class CheckerSequentialChannelMixin:
             )
             if abort_result:
                 return abort_result
-            
+
             # Get streams for this channel
             self.progress.update(
                 channel_id=channel_id,
@@ -216,7 +216,7 @@ class CheckerSequentialChannelMixin:
                 step_detail=f'Loading streams for {channel_name}',
                 **profile_progress_context,
             )
-            
+
             streams = self._checker_fetch_channel_streams(channel_id)
             abort_result = self._abort_channel_check_if_requested(
                 channel_id,
@@ -284,9 +284,9 @@ class CheckerSequentialChannelMixin:
                     'revived_streams_count': 0,
                     'channel_visibility': visibility_result,
                 }
-            
+
             logger.info(f"Found {len(streams)} streams for channel {channel_name}")
-            
+
             # Check if channel has active viewers or if its playlist has reached max concurrent streams
             limit_check_result = self._check_channel_limits(
                 channel_id,
@@ -301,7 +301,7 @@ class CheckerSequentialChannelMixin:
                     queue_entry_token=queue_entry_token,
                 )
                 return limit_check_result
-            
+
             # Check if this is a force check (bypasses 2-hour immunity)
             if force_check_override is None:
                 force_check, owned_force_generation = (
@@ -313,12 +313,12 @@ class CheckerSequentialChannelMixin:
             # NOTE: force_check controls immunity bypass ONLY (all streams are re-analyzed).
             # It no longer overrides allow_revive — the profile flag is the sole authority
             # for whether a previously-dead stream can be promoted back to active (Bug 5 fix).
-            
+
             # Get list of already checked streams to avoid re-analyzing
             checked_stream_info = self.update_tracker.updates.get('channels', {}).get(str(channel_id), {})
             checked_stream_ids = checked_stream_info.get('checked_stream_ids', [])
             last_check_str = checked_stream_info.get('last_check')
-            
+
             # Check if immunity period (2 hours) has expired
             immunity_expired = False
             if last_check_str and grace_period:
@@ -329,7 +329,7 @@ class CheckerSequentialChannelMixin:
                         logger.info(f"Immunity period (2 hours) expired for channel {channel_name} - will re-analyze all streams")
                 except Exception as e:
                     logger.warning(f"Failed to parse last_check timestamp for channel {channel_id}: {e}")
-            
+
             current_stream_ids = [s['id'] for s in streams]
             assigned_stream_ids = self._get_channel_assignment_stream_ids(
                 channel_id,
@@ -354,9 +354,9 @@ class CheckerSequentialChannelMixin:
                     channel_name,
                     len(protected_active_stream_ids),
                 )
-            
+
             # Identify which streams need analysis (new or unchecked)
-            
+
             if target_stream_ids is not None:
                 # Targeted check mode: Evaluates newly assigned streams ONLY
                 streams_to_check = [
@@ -370,14 +370,14 @@ class CheckerSequentialChannelMixin:
                     and s.get('id') not in protected_active_stream_ids
                 ]
                 logger.info(f"Targeted stream check: evaluating {len(streams_to_check)} specific newly assigned streams")
-                
+
             elif force_check or (grace_period and immunity_expired) or (not grace_period and not force_check):
                 streams_to_check = [
                     s for s in streams
                     if s.get('id') not in protected_active_stream_ids
                 ]
                 streams_already_checked = []
-                
+
                 if force_check:
                     logger.info(f"Force check enabled: analyzing all {len(streams)} streams (bypassing 2-hour immunity)")
                     if force_check_override is None or owned_force_generation is not None:
@@ -401,20 +401,20 @@ class CheckerSequentialChannelMixin:
                     if s['id'] in checked_stream_ids
                     and s.get('id') not in protected_active_stream_ids
                 ]
-                
+
                 if streams_to_check:
                     logger.info(f"Found {len(streams_to_check)} new/unchecked streams (out of {len(streams)} total)")
                 else:
                     logger.info(f"All {len(streams)} streams have been recently checked (within 2h immunity), using cached scores")
-                    
+
                     # Optimization: Skip check entirely if all conditions are met:
                     # 1. No new streams to analyze (all have been checked)
                     # 2. Stream count matches previous check (no additions/deletions)
                     # 3. Set of stream IDs is identical (no stream replacements)
                     previous_stream_count = len(checked_stream_ids)
                     current_stream_count = len(current_stream_ids)
-                    
-                    if (current_stream_count == previous_stream_count and 
+
+                    if (current_stream_count == previous_stream_count and
                         set(current_stream_ids) == set(checked_stream_ids)):
                         logger.info(f"Channel {channel_name} unchanged since last check - skipping reorder")
                         # Update timestamp but keep existing checked_stream_ids
@@ -441,7 +441,7 @@ class CheckerSequentialChannelMixin:
                         }
                     else:
                         logger.info(f"Channel composition changed (prev: {previous_stream_count}, curr: {current_stream_count}) - will reorder")
-            
+
             # Streams that are actively analyzed in this pass. Used to gate
             # dead_stream_ids mutations — only streams checked in THIS pass may
             # be added to dead_stream_ids. Unchecked streams retain their tracker
@@ -453,7 +453,7 @@ class CheckerSequentialChannelMixin:
             dead_stream_ids = set()  # Use set for O(1) lookups
             revived_stream_ids = []
             total_streams = len(streams_to_check)
-            
+
             # Dict to keep track of the stream details throughout the analysis
             stream_statuses = {
                 s['id']: {
@@ -464,12 +464,12 @@ class CheckerSequentialChannelMixin:
                 }
                 for s in streams_to_check
             }
-            
+
             for idx, stream in enumerate(streams_to_check, 1):
                 if self.abort_current_check.is_set():
                     logger.info("Abort requested, stopping sequential stream checks")
                     break
-                    
+
                 self.progress.update(
                     channel_id=channel_id,
                     channel_name=channel_name,
@@ -482,12 +482,12 @@ class CheckerSequentialChannelMixin:
                     streams_detail=list(stream_statuses.values()),
                     **profile_progress_context,
                 )
-                
+
                 if stream['id'] in stream_statuses:
                     stream_statuses[stream['id']]['status'] = 'checking'
                     stream_statuses[stream['id']]['started_at'] = datetime.now().isoformat()
                     self._clear_active_stream_reason(stream_statuses[stream['id']])
-                
+
                 # Analyze stream
                 analysis_params = self.config.get('stream_analysis', {})
 
@@ -505,12 +505,12 @@ class CheckerSequentialChannelMixin:
                     stream_duration=analysis_params.get('ffmpeg_duration', 20),
                     **profile_progress_context,
                 )
-                
+
                 # Apply URL transformation if using M3U profile with search/replace patterns
                 stream_url = stream.get('url', '')
                 if udi:
                     stream_url = udi.apply_profile_url_transformation(stream)
-                
+
                 bitrate_recheck_enabled = self._is_bitrate_recheck_enabled()
                 analyzed = self._checker_analyze_stream(
                     stream_url=stream_url,
@@ -581,7 +581,7 @@ class CheckerSequentialChannelMixin:
                     on_start=sequential_recheck_started,
                 )
                 self._apply_previous_bitrate_fallback(analyzed, stream)
-                
+
                 # Check if stream is dead using pre-resolved threshold config
                 dead_result = self._is_stream_dead(analyzed, channel_id, threshold_config=_threshold_config)
                 self._apply_quality_classification(analyzed, dead_result)
@@ -593,7 +593,7 @@ class CheckerSequentialChannelMixin:
                 stream_url = stream.get('url', '')
                 stream_name = stream.get('name', 'Unknown')
                 was_dead = self.dead_streams_tracker.is_dead(stream_url)
-                
+
                 if is_dead and not was_dead:
                     failed_connectivity = self._require_quality_check_connectivity(
                         phase='mark_dead_stream',
@@ -675,7 +675,7 @@ class CheckerSequentialChannelMixin:
                 score = self._calculate_stream_score(analyzed, priority_m3u_ids, priority_mode, scoring_weights)
                 analyzed['score'] = score
                 analyzed_streams.append(analyzed)
-                
+
                 # Update stream status for progress display
                 if stream['id'] in stream_statuses:
                     if analyzed.get('status') == 'ERROR':
@@ -713,7 +713,7 @@ class CheckerSequentialChannelMixin:
                         stream_statuses[stream['id']]['video_codec'] = analyzed.get('video_codec', 'N/A')
                         stream_statuses[stream['id']]['fps'] = analyzed.get('fps', 0)
                         stream_statuses[stream['id']]['bitrate'] = analyzed.get('bitrate_kbps')
-                
+
                 logger.info(f"Stream {idx}/{total_streams}: {stream.get('name')} - Score: {score:.2f}")
 
             abort_result = self._abort_channel_check_if_requested(
@@ -723,7 +723,7 @@ class CheckerSequentialChannelMixin:
             )
             if abort_result:
                 return abort_result
-            
+
             # For already-checked streams, retrieve their cached data from UDI
             for stream in streams_already_checked:
                 stream_data = udi.get_stream_by_id(stream['id'])
@@ -740,7 +740,7 @@ class CheckerSequentialChannelMixin:
                                 stream_stats = {}
                         except json.JSONDecodeError:
                             stream_stats = {}
-                    
+
                     # Reconstruct analyzed format from stored stats
                     # Use "0x0" for resolution, 0 for FPS and bitrate when not available
                     extracted_cached_stats = extract_stream_stats(stream_data)
@@ -782,7 +782,7 @@ class CheckerSequentialChannelMixin:
                         if field in stream_stats:
                             analyzed[field] = stream_stats.get(field)
                     self._copy_bitrate_recheck_report_fields(analyzed, stream_stats)
-                    
+
                     # TARGETED MODE GUARD: Dead-state transitions for streams in
                     # streams_already_checked are intentionally suppressed. These streams
                     # were NOT analyzed in this pass — their dead/alive determination is
@@ -823,7 +823,7 @@ class CheckerSequentialChannelMixin:
                     # elif is_dead and was_dead:
                     #     logger.debug(f"Cached stream {stream['id']} remains dead (already marked)")
                     #     dead_stream_ids.add(stream['id'])
-                    
+
                     # Calculate score using stored stats and CURRENT profile weights
                     score = self._calculate_stream_score(analyzed, priority_m3u_ids, priority_mode, scoring_weights)
                     analyzed['score'] = score
@@ -833,12 +833,12 @@ class CheckerSequentialChannelMixin:
                     # If we can't fetch cached data, analyze this stream
                     logger.warning(f"Could not fetch cached data for stream {stream['id']}, will analyze")
                     analysis_params = self.config.get('stream_analysis', {})
-                    
+
                     # Apply URL transformation if using M3U profile with search/replace patterns
                     stream_url = stream.get('url', '')
                     if udi:
                         stream_url = udi.apply_profile_url_transformation(stream)
-                    
+
                     analyzed = self._checker_analyze_stream(
                         stream_url=stream_url,
                         stream_id=stream['id'],
@@ -936,9 +936,9 @@ class CheckerSequentialChannelMixin:
             # Sort streams using tiered sort keys (lexicographical ranking)
             for analyzed in analyzed_streams:
                 analyzed['sort_key'] = self._generate_stream_sort_key(analyzed, priority_m3u_ids, priority_mode)
-                
+
             analyzed_streams.sort(key=lambda x: x['sort_key'])
-            
+
             # Apply stream limit if configured in profile
             if stream_limit > 0 and len(analyzed_streams) > stream_limit:
                 removed_count = len(analyzed_streams) - stream_limit
@@ -946,7 +946,7 @@ class CheckerSequentialChannelMixin:
                 analyzed_streams = analyzed_streams[:stream_limit]
 
             report_analyzed_streams = list(analyzed_streams)
-            
+
             # Remove dead streams from the channel (if enabled in config)
             # Dead streams are checked during all channel checks (normal and global)
             # If they're still dead, they're removed; if revived, they remain
@@ -961,7 +961,7 @@ class CheckerSequentialChannelMixin:
                     analyzed_streams = [s for s in analyzed_streams if s.get('stream_id') not in dead_stream_ids]
                 else:
                     logger.info(f"⚠️ Found {len(dead_stream_ids)} dead streams in channel {channel_name}, but removal is disabled in config")
-            
+
             if revived_stream_ids:
                 logger.info(f"{len(revived_stream_ids)} streams were revived in channel {channel_name}")
 
@@ -972,7 +972,7 @@ class CheckerSequentialChannelMixin:
             )
             if abort_result:
                 return abort_result
-            
+
             # Update channel with reordered streams
             self.progress.update(
                 channel_id=channel_id,
@@ -1070,7 +1070,7 @@ class CheckerSequentialChannelMixin:
                 raise RuntimeError(
                     f"Dispatcharr rejected stream assignment for channel {channel_id}"
                 )
-            
+
             # Verify the update was applied correctly
             self.progress.update(
                 channel_id=channel_id,
@@ -1082,11 +1082,11 @@ class CheckerSequentialChannelMixin:
                 step_detail='Confirming stream order was applied',
                 **profile_progress_context,
             )
-            
+
             # Only verify if enabled in configuration
             batch_config = self.config.get('batch_operations', {})
             verify_updates = batch_config.get('verify_updates', False)
-            
+
             if verify_updates:
                 time.sleep(0.5)  # Brief delay to ensure API has processed the update
                 # Refresh this specific channel in UDI to get updated data after write
@@ -1103,7 +1103,7 @@ class CheckerSequentialChannelMixin:
                     logger.warning(f"⚠ Could not verify channel {channel_name}: channel data not found after refresh")
             else:
                 logger.debug(f"Skipped verification for channel {channel_name} (disabled in config)")
-            
+
             logger.info(f"✓ Channel {channel_name} checked and streams reordered")
 
             # Build stream_stats unconditionally so the return dict can always
@@ -1223,7 +1223,7 @@ class CheckerSequentialChannelMixin:
                     logo_id = channel_data.get('logo_id')
                     if logo_id:
                         logo_url = f"/api/logos/{logo_id}"
-                    
+
                     # Add to batch changelog instead of creating individual entry
                     # Only add to batch if not explicitly skipped (e.g., when called from check_single_channel)
                     if not skip_batch_changelog:
@@ -1244,7 +1244,7 @@ class CheckerSequentialChannelMixin:
                         logger.info(f"Added channel {channel_name} to batch changelog")
                 except Exception as e:
                     logger.warning(f"Failed to add to batch changelog: {e}")
-            
+
             # Update current_stream_ids to exclude dead streams that were removed
             # This prevents dead stream IDs from being saved in checked_stream_ids
             # which would cause them to be skipped by 2-hour immunity even after revival
@@ -1272,7 +1272,7 @@ class CheckerSequentialChannelMixin:
                 ),
                 queue_entry_token=queue_entry_token,
             )
-            
+
             blank_streams_count = self._count_checked_stream_status(
                 {'checked_streams': stream_stats},
                 'blank',
@@ -1294,12 +1294,12 @@ class CheckerSequentialChannelMixin:
                 'freeze_streams_count': freeze_streams_count,
                 'revived_streams_count': len(revived_stream_ids),
                 'dead_streams': [{
-                    'id': s, 
+                    'id': s,
                     'name': next((st.get('name') for st in streams if st['id'] == s), f'Stream {s}'),
                     'm3u_account': next((self._get_stream_m3u_account_id(st) for st in streams if st['id'] == s), None)
                 } for s in dead_stream_ids],
                 'revived_streams': [{
-                    'id': s, 
+                    'id': s,
                     'name': next((st.get('name') for st in streams if st['id'] == s), f'Stream {s}'),
                     'm3u_account': next((self._get_stream_m3u_account_id(st) for st in streams if st['id'] == s), None)
                 } for s in revived_stream_ids],
@@ -1318,7 +1318,7 @@ class CheckerSequentialChannelMixin:
                 str(e),
                 entry_token=queue_entry_token,
             )
-            
+
             # Add failed check to batch changelog
             # Only add to batch if not explicitly skipped
             if self.changelog and not skip_batch_changelog:
@@ -1328,7 +1328,7 @@ class CheckerSequentialChannelMixin:
                         channel_name = channel_data.get('name', f'Channel {channel_id}')
                     except:
                         channel_name = f'Channel {channel_id}'
-                    
+
                     self._add_to_batch_changelog(
                         {
                             'channel_id': channel_id,
@@ -1345,7 +1345,7 @@ class CheckerSequentialChannelMixin:
                     )
                 except Exception as changelog_error:
                     logger.warning(f"Failed to add to batch changelog: {changelog_error}")
-            
+
             # Return empty stats on error
             return {
                 'dead_streams_count': 0,
@@ -1354,7 +1354,7 @@ class CheckerSequentialChannelMixin:
                 'success': False,
                 'error': str(e),
             }
-        
+
         finally:
             self.checking = False
 

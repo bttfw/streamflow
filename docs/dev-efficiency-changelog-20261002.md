@@ -32,7 +32,7 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
 | 13 | Isolated countdowns and visible stream rows | Tests and browser fixtures passed |
 | 14 | Consolidate suitable stats write paths | Implemented; regression tests passed |
 | 15 | Bound legacy in-memory changelog | Implemented; regression tests passed |
-| 16 | Extract checker queue/stats responsibilities | Implemented; regression tests passed |
+| 16 | Split checker orchestration and supporting responsibilities | Implemented; regression tests passed |
 | 17 | Separate operation timing summaries | Implemented; regression tests passed |
 
 ## Implementation changes
@@ -87,11 +87,11 @@ Base: `ccab14e7f61a12ba4fa1375e7db8472757c941bd` (`upstream/dev`).
   server-side bulk-write API. Cache publication follows successful responses;
   partial failures remain counted separately. Payload filtering is preserved
   independently for single-stream and batch preparation.
-- Queue execution and statistics preparation/writing now live in separate
-  modules, with shared probe-report field definitions. This is a partial split;
-  the checker service still contains its orchestration and probe logic
-  (10,862 lines at `ce7881e0`). The extracted queue, stats, and shared-field
-  modules contain 123, 262, and 24 lines respectively.
+- Queue execution, statistics preparation/writing, channel orchestration and
+  supporting responsibilities now live in separate modules, with shared
+  probe-report field definitions. The initial queue/stats split at `ce7881e0`
+  left a 10,862-line checker service; the subsequent decomposition replaces it
+  with a small facade and the focused package documented below.
 - Recovery deadlines, provider waits, media-probe elapsed time, and channel/run
   durations use monotonic clocks. Event dates and persisted start timestamps
   continue to use calendar time.
@@ -260,10 +260,18 @@ Executed locally during draft validation:
   focused modules; their behaviors share the original service state and locks.
 - Kept callable identity and facade dependency bindings, the patchable heartbeat
   interval, original local imports, and version-file lookup semantics intact.
+- Moved 15 concurrent progress, heartbeat and serial bitrate callbacks into
+  three factory modules. The parallel orchestrator falls from 2,072 to 1,484
+  lines; callback factories share the original counters, maps and locks.
 - Source-AST equivalence passed for the relocated method bodies after reversing
-  dependency access. The first targeted runtime set passed 215 regressions.
-- Full-suite and image/runtime validation of this decomposition are pending.
-  Boundaries are documented in [Stream Checker architecture](stream-checker-architecture.md).
+  dependency access; all 15 relocated callback bodies also compare identically.
+  Twenty checker submodules import successfully in fresh processes.
+- Post-split validation: 215 targeted regressions passed; the complete non-live
+  backend suite passed 2,041 tests, with 1 skipped and 1 live test deselected.
+  All 295 frontend tests passed across 39 files; production build and complete
+  backend compilation passed.
+- Image/runtime validation of this decomposition is pending. Boundaries are
+  documented in [Stream Checker architecture](stream-checker-architecture.md).
 
 ## Validation limits
 

@@ -99,7 +99,7 @@ try:
 except ImportError:
     CHANGELOG_AVAILABLE = False
 
-SPECIALIZED_QUEUE_SOURCES = {"teamarr_preflight", "auto_create"}
+from apps.stream.checker.constants import SPECIALIZED_QUEUE_SOURCES
 
 # Import croniter for cron expression validation
 try:
@@ -137,11 +137,12 @@ from apps.stream.checker.refresh_scope import (
 class StreamCheckerService(CheckerOperationsMixin):
     """Main service for managing stream checking operations."""
     SINGLE_CHANNEL_RUN_SNAPSHOT_MAX_BYTES = 50 * 1024
-    
+
 
     # Keep connector/media dependencies at the facade boundary. Extracted
     # behaviors call these adapters; tests and integrations can replace the
     # existing module bindings without copying or changing shared state.
+    # Properties preserve the original callable identity and its attributes.
 
     @property
     def _checker_get_udi_manager(self):
@@ -186,23 +187,23 @@ class StreamCheckerService(CheckerOperationsMixin):
     def __init__(self):
         log_function_call(logger, "__init__")
         logger.debug("Initializing StreamCheckerService components...")
-        
+
         self.config = StreamCheckConfig()
         logger.debug("Config loaded")
         self.hardware_acceleration_diagnostics = {}
         self._refresh_hardware_acceleration_diagnostics(log_startup=True)
-        
+
         self.update_tracker = ChannelUpdateTracker()
         logger.debug("Update tracker initialized")
-        
+
         self.check_queue = StreamCheckQueue(
             max_size=self.config.get('queue.max_size', 1000)
         )
         logger.debug(f"Check queue initialized with max_size={self.config.get('queue.max_size', 1000)}")
-        
+
         self.progress = StreamCheckerProgress()
         logger.debug("Progress tracker initialized")
-        
+
         self.dead_streams_tracker = DeadStreamsTracker()
         logger.debug("Dead streams tracker initialized")
 
@@ -218,7 +219,7 @@ class StreamCheckerService(CheckerOperationsMixin):
 
         self.channel_visibility_automation = ChannelVisibilityAutomation()
         logger.debug("Channel visibility automation initialized")
-        
+
         # Initialize changelog manager
         self.changelog = None
         if CHANGELOG_AVAILABLE:
@@ -228,14 +229,14 @@ class StreamCheckerService(CheckerOperationsMixin):
             except Exception as e:
                 log_exception(logger, e, "changelog initialization")
                 logger.warning(f"Failed to initialize changelog manager: {e}")
-        
+
         # Batch changelog tracking
         self.batch_changelog_entries = []
         self.batch_start_time = None
         self.batch_lock = threading.Lock()
         self._batch_changelog_generation = 0
         self._active_batch_changelog_generation = None
-        
+
         self.running = False
         self.checking = False
         self.start_time = datetime.now()
@@ -261,7 +262,7 @@ class StreamCheckerService(CheckerOperationsMixin):
         self._cancel_queueing = False
         self._sync_batch_generation = 0
         self._specialized_queue_gates = set()
-        
+
         self.sync_batch_state = {
             'active': False,
             'total_channels': 0,
@@ -276,22 +277,22 @@ class StreamCheckerService(CheckerOperationsMixin):
             'channels_ready': 0,
             'channel_visibility_changed': 0,
         }
-        
+
         # Event for immediate triggering of updated channels check
         self.check_trigger = threading.Event()
         logger.debug("Check trigger event created")
-        
+
         # Event for immediate config change notification
         self.config_changed = threading.Event()
         logger.debug("Config changed event created")
-        
+
         # Event for aborting current channel check
         self.abort_current_check = threading.Event()
         logger.debug("Abort current check event created")
-        
+
         logger.info("Stream Checker Service initialized")
         log_function_return(logger, "__init__")
-    
+
     def start(self):
         """Start the stream checker service."""
         log_function_call(logger, "start")
@@ -299,49 +300,49 @@ class StreamCheckerService(CheckerOperationsMixin):
             if self.running:
                 logger.warning("Stream checker service is already running")
                 return
-            
+
             log_state_change(logger, "stream_checker_service", "stopped", "starting")
             self.running = True
-            
+
             # Start worker thread for processing queue
             self.worker_thread = threading.Thread(target=self._worker_loop, daemon=True)
             self.worker_thread.start()
             logger.debug(f"Worker thread started (id: {self.worker_thread.ident})")
-            
+
             # Start scheduler thread for periodic checks
             self.scheduler_thread = threading.Thread(target=self._scheduler_loop, daemon=True)
             self.scheduler_thread.start()
             logger.debug(f"Scheduler thread started (id: {self.scheduler_thread.ident})")
-            
+
             log_state_change(logger, "stream_checker_service", "starting", "running")
             logger.info("Stream checker service started")
             log_function_return(logger, "start")
-    
+
     def stop(self):
         """Stop the stream checker service."""
         with self.lock:
             if not self.running:
                 logger.warning("Stream checker service is not running")
                 return
-            
+
             self.running = False
             logger.info("Stream checker service stopping...")
-        
+
         # Wait for threads to finish
         if self.worker_thread and self.worker_thread.is_alive():
             self.worker_thread.join(timeout=5)
         if self.scheduler_thread and self.scheduler_thread.is_alive():
             self.scheduler_thread.join(timeout=5)
-        
+
         self.progress.clear()
         logger.info("Stream checker service stopped")
-    
+
     def _worker_loop(self):
         """Main worker loop for processing the check queue."""
         log_function_call(logger, "_worker_loop")
         logger.info("Stream checker worker started")
         batch_changelog_generation = None
-        
+
         while self.running:
             owned_queue_execution = None
             try:
@@ -437,7 +438,7 @@ class StreamCheckerService(CheckerOperationsMixin):
                 channel_id = queue_entry.get('channel_id')
                 queue_entry_token = queue_entry.get('queue_entry_token')
                 queue_metadata = queue_entry.get('metadata') or {}
-                
+
                 single_check_metadata = self._is_specialized_queue_metadata(queue_metadata)
 
                 if not single_check_metadata:
@@ -505,7 +506,7 @@ class StreamCheckerService(CheckerOperationsMixin):
                                 channel_id,
                             )
                             continue
-                
+
                 logger.debug(f"Worker processing channel {channel_id}")
                 # Check this channel
                 forced_profile_id = queue_metadata.get('forced_profile_id')
@@ -548,32 +549,32 @@ class StreamCheckerService(CheckerOperationsMixin):
                             expected_generation=force_generation,
                         )
                 logger.debug(f"Worker completed channel {channel_id}")
-                
+
             except Exception as e:
                 log_exception(logger, e, "worker loop")
                 logger.error(f"Error in worker loop: {e}", exc_info=True)
             finally:
                 if owned_queue_execution is not None:
                     self._release_queue_entry_execution(*owned_queue_execution)
-        
+
         # Finalize any remaining batch before stopping
         if batch_changelog_generation is not None:
             self._finalize_batch_changelog(
                 batch_generation=batch_changelog_generation,
             )
-        
+
         logger.info("Stream checker worker stopped")
         log_function_return(logger, "_worker_loop")
-    
+
     def _scheduler_loop(self):
         """Scheduler loop for M3U update-triggered and scheduled checks."""
         logger.info("Stream checker scheduler started")
-        
+
         while self.running:
             try:
                 # Wait for either a trigger event or timeout (60 seconds for global check monitoring)
                 triggered = self.check_trigger.wait(timeout=60)
-                
+
                 # Handle trigger for M3U updates
                 if triggered:
                     self.check_trigger.clear()
@@ -582,48 +583,48 @@ class StreamCheckerService(CheckerOperationsMixin):
                     if not self.config_changed.is_set():
                         # Call _queue_updated_channels() directly - it handles pipeline mode checking internally
                         self._queue_updated_channels()
-                
+
                 # Check if config was changed
                 if self.config_changed.is_set():
                     self.config_changed.clear()
                     logger.info("Configuration change detected, applying new settings immediately")
-                
+
             except Exception as e:
                 logger.error(f"Error in scheduler loop: {e}", exc_info=True)
-        
+
         logger.info("Stream checker scheduler stopped")
 
 
-    
-    
-    
 
 
-    
 
 
-    
 
 
-    
-    
 
 
-    
-    
 
-    
-    
+
+
+
+
+
+
+
+
+
+
+
     # Deprecated: _trigger_empty_channel_disabling and _trigger_channel_re_enabling
     # were removed as they relied on a missing module 'empty_channel_manager'
     # and obsolete Dispatcharr features.
-    
-    
+
+
 
     # Removed _refine_sorted_streams in favor of lexicographical Sort Keys.
 
 
-    
+
     def _check_channel(
         self,
         channel_id: int,
@@ -639,9 +640,9 @@ class StreamCheckerService(CheckerOperationsMixin):
         expected_progress_generation: Optional[int] = None,
     ):
         """Check and reorder streams for a specific channel.
-        
+
         Routes to either concurrent or sequential checking based on configuration.
-        
+
         Args:
             channel_id: ID of the channel to check
             skip_batch_changelog: If True, don't add this check to the batch changelog
@@ -695,7 +696,7 @@ class StreamCheckerService(CheckerOperationsMixin):
             )
 
         concurrent_enabled = self.config.get('concurrent_streams.enabled', True)
-        
+
         if concurrent_enabled:
             return self._check_channel_concurrent(
                 channel_id,
@@ -731,16 +732,16 @@ class StreamCheckerService(CheckerOperationsMixin):
             )
 
 
-    
-
-    
-    
-
-    
-    
 
 
-    
+
+
+
+
+
+
+
+
 
 
     @staticmethod
@@ -772,17 +773,17 @@ class StreamCheckerService(CheckerOperationsMixin):
         }
 
 
-    
-    
 
 
-    
 
 
-    
 
-    
-    
+
+
+
+
+
+
     def update_config(self, updates: Dict):
         """Update service configuration and apply changes immediately."""
         # Sanitize user_agent if present
@@ -804,7 +805,7 @@ class StreamCheckerService(CheckerOperationsMixin):
             updates['stream_analysis']['hardware_acceleration'] = normalize_hardware_acceleration_config(
                 updates['stream_analysis'].get('hardware_acceleration')
             )
-        
+
         # Log what's being updated
         config_changes = []
         if 'automation_controls' in updates:
@@ -814,7 +815,7 @@ class StreamCheckerService(CheckerOperationsMixin):
                 old_value = old_controls.get(key, False)
                 if old_value != value:
                     config_changes.append(f"Automation control '{key}': {old_value} → {value}")
-        
+
         if 'global_check_schedule' in updates:
             schedule_changes = []
             schedule = updates['global_check_schedule']
@@ -837,18 +838,18 @@ class StreamCheckerService(CheckerOperationsMixin):
                     schedule_changes.append(f"Enabled: {old_enabled} → {new_enabled}")
             if schedule_changes:
                 config_changes.append(f"Global check schedule: {', '.join(schedule_changes)}")
-        
+
         # Apply the configuration update
         self.config.update(updates)
         if 'stream_analysis' in updates and 'hardware_acceleration' in updates['stream_analysis']:
             self._refresh_hardware_acceleration_diagnostics(log_startup=True)
-        
+
         # Log the changes
         if config_changes:
             logger.info(f"Configuration updated: {'; '.join(config_changes)}")
         else:
             logger.info("Configuration updated")
-        
+
         # Signal that config has changed for immediate application
         if self.running:
             self.config_changed.set()
@@ -856,7 +857,7 @@ class StreamCheckerService(CheckerOperationsMixin):
             # The scheduler will check config_changed and skip channel queueing
             self.check_trigger.set()
             logger.info("Configuration changes will be applied immediately")
-        
+
         # Reload queue max size if changed
         if 'queue' in updates and 'max_size' in updates['queue']:
             # Can't resize existing queue, but will apply on next restart

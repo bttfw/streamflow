@@ -26,12 +26,21 @@ queue-entry tokens, batch/progress generations, and lock ordering.
 | `single_channel.py` | Direct channel refresh/matching/check orchestration |
 | `single_stream.py` | Direct capacity-limited stream checks |
 | `concurrent_channel.py` | Parallel channel orchestration |
+| `concurrent_progress.py` | Profile reservations, atomic live-row snapshots and initial probe callbacks |
+| `bitrate_progress.py` | Serial bitrate recheck callbacks and terminal live-row updates |
+| `heartbeat.py` | Periodic publication of current run snapshots |
 | `sequential_channel.py` | Sequential channel orchestration |
 | `loop_probes.py` | Capacity-limited loop analysis |
 | `refresh_scope.py` | Playlist scope selection and refresh observation |
 
 The existing `queue_execution.py` and `stream_stats_writer.py` behaviors remain
 part of the composition. Probe result fields remain in `quality_report_fields.py`.
+
+Callback factories receive the existing run values, mutable counters, status
+mapping and synchronization objects explicitly. They return callable bundles;
+they do not copy the run state or create locks. Heartbeat thread creation,
+shutdown and joining remain in the channel orchestrator. The initial callbacks,
+heartbeat and bitrate callbacks share the same revision/publication boundaries.
 
 Connector/media bindings stay at the facade boundary. Properties return the
 original callable rather than wrapping it, preserving its identity, attributes,

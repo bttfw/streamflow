@@ -313,7 +313,7 @@ class CheckerQueueMixin:
 
     def _queue_updated_channels(self):
         """Queue channels that have received M3U updates.
-        
+
         This respects automation_controls and queues channels only when
         automatic quality checking is enabled.
         """
@@ -327,9 +327,9 @@ class CheckerQueueMixin:
         if not self.config.is_auto_quality_checking_enabled():
             logger.info("Skipping channel queueing - automatic quality checking is disabled")
             return
-        
+
         max_channels = self.config.get('queue.max_channels_per_run', 50)
-        
+
         with self.lock:
             if getattr(self, '_cancel_queueing', False):
                 logger.info("Skipping updated-channel queueing after cancellation")
@@ -357,7 +357,7 @@ class CheckerQueueMixin:
 
     def _queue_all_channels(self, force_check: bool = False):
         """Queue all channels for checking (global check).
-        
+
         Args:
             force_check: If True, marks channels for force checking which bypasses 2-hour immunity
         """
@@ -372,40 +372,40 @@ class CheckerQueueMixin:
                 return
 
             channels = udi.get_channels()
-            
+
             if channels:
                 channel_ids = [ch['id'] for ch in channels if isinstance(ch, dict) and 'id' in ch]
-                
+
                 # Filter by profile if one is selected
                 # Filter channels using Automation Profiles
                 from apps.automation.automation_config_manager import get_automation_config_manager
                 automation_config = get_automation_config_manager()
-                
+
                 filtered_channels = []
-                
+
                 for ch in channels:
                     if not isinstance(ch, dict) or 'id' not in ch:
                         continue
-                    
+
                     cid = ch['id']
                     channel_group_id = ch.get('channel_group_id')
-                    
+
                     # Get effective profile
                     # Get effective profile via configuration
                     config = automation_config.get_effective_configuration(cid, channel_group_id)
                     profile = config.get('profile') if config else None
-                    
+
                     # Check if stream checking is enabled in the profile
                     if profile and profile.get('stream_checking', {}).get('enabled', False):
                         filtered_channels.append(ch)
 
                 filtered_channel_ids = [ch['id'] for ch in filtered_channels]
-                
+
                 excluded_count = len(channel_ids) - len(filtered_channel_ids)
-                
+
                 if excluded_count > 0:
                     logger.info(f"Excluding {excluded_count} channel(s) with checking disabled (channel or group level)")
-                
+
                 if not filtered_channel_ids:
                     logger.info("No channels with checking enabled to queue for global check")
                     return
@@ -435,7 +435,7 @@ class CheckerQueueMixin:
                 )
 
                 max_channels = self.config.get('queue.max_channels_per_run', 50)
-                
+
                 # Queue in batches with higher priority for global checks
                 total_added = 0
                 for i in range(0, len(filtered_channel_ids), max_channels):
@@ -456,7 +456,7 @@ class CheckerQueueMixin:
                             ),
                         )
                     total_added += added
-                
+
                 logger.info(f"Queued {total_added}/{len(filtered_channel_ids)} channels for global check (force_check={force_check})")
         except Exception as e:
             logger.error(f"Failed to queue all channels: {e}")
@@ -471,13 +471,13 @@ class CheckerQueueMixin:
         immutable_metadata_keys: Optional[Set[str]] = None,
     ) -> bool:
         """Manually queue a channel for checking.
-        
+
         Args:
             channel_id: ID of the channel to queue
             priority: Priority for queue ordering (higher = earlier)
             force_check: If True, marks channel for force checking (bypasses 2-hour immunity)
             metadata: Optional queue metadata used by specialized callers
-            
+
         Returns:
             True if channel was successfully queued, False otherwise
         """
@@ -513,13 +513,13 @@ class CheckerQueueMixin:
         immutable_metadata_keys: Optional[Set[str]] = None,
     ) -> int:
         """Manually queue multiple channels for checking.
-        
+
         Args:
             channel_ids: List of channel IDs to queue
             priority: Priority for queue ordering (higher = earlier)
             force_check: If True, marks all channels for force checking (bypasses 2-hour immunity)
             metadata: Optional shared queue ownership metadata
-            
+
         Returns:
             Number of channels successfully queued
         """
@@ -829,7 +829,7 @@ class CheckerQueueMixin:
 
     def trigger_check_updated_channels(self):
         """Trigger immediate check of channels with M3U updates.
-        
+
         This method signals the scheduler to immediately process any channels
         that have been marked as updated, instead of waiting for the next
         scheduled check interval.

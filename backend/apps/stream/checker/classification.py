@@ -90,7 +90,7 @@ class CheckerClassificationMixin:
             try:
                 from apps.automation.automation_config_manager import get_automation_config_manager
                 automation_config = get_automation_config_manager()
-                
+
                 # Get effective profile
                 udi = self._checker_get_udi_manager()
                 channel = udi.get_channel_by_id(channel_id)
@@ -114,13 +114,13 @@ class CheckerClassificationMixin:
                             profile_config['min_resolution_width'], profile_config['min_resolution_height'] = 854, 480
                         elif min_res == '360p':
                             profile_config['min_resolution_width'], profile_config['min_resolution_height'] = 640, 360
-                        
+
                         if 'min_bitrate' in stream_checking:
                             profile_config['min_bitrate_kbps'] = stream_checking['min_bitrate']
-                        
+
                         if 'min_fps' in stream_checking:
                             profile_config['min_fps'] = stream_checking['min_fps']
-                        
+
                         # Use profile config if available
                         check_config = profile_config
                     else:
@@ -143,7 +143,7 @@ class CheckerClassificationMixin:
                 'min_bitrate_kbps': 0,
                 'min_score': 0
             }
-        
+
         # Use centralized utility for the check
         return utils_is_stream_dead(stream_data, check_config)
 
@@ -175,13 +175,13 @@ class CheckerClassificationMixin:
 
     def _calculate_channel_averages(self, analyzed_streams: List[Dict], dead_stream_ids: set) -> Dict[str, str]:
         """Calculate channel-level average statistics from analyzed streams.
-        
+
         Uses centralized utility function for consistent average calculation.
-        
+
         Args:
             analyzed_streams: List of analyzed stream dictionaries
             dead_stream_ids: Set of stream IDs that are marked as dead
-            
+
         Returns:
             Dictionary with avg_resolution, avg_bitrate, and avg_fps
         """
@@ -349,9 +349,9 @@ class CheckerClassificationMixin:
 
     def _calculate_stream_score(self, stream_data: Dict, priority_m3u_ids: List[int] = None, priority_mode: str = 'absolute', scoring_weights: Dict = None) -> float:
         """Calculate a quality score for a stream based on analysis.
-        
+
         Applies M3U account priority matching the order in the channel's Automation Profile.
-        
+
         Args:
             stream_data: Dictionary of stream analysis data
             priority_m3u_ids: List of M3U account IDs in priority order (highest first)
@@ -362,7 +362,7 @@ class CheckerClassificationMixin:
         _dead, _ = self._is_stream_dead(stream_data)
         if _dead:
             return 0.0
-        
+
         # Use per-profile weights if provided, otherwise fall back to global config
         if scoring_weights is None:
             weights = self.config.get('scoring.weights', {})
@@ -376,9 +376,9 @@ class CheckerClassificationMixin:
                 'hdr': scoring_weights.get('hdr', 0.10)
             }
             prefer_h265 = scoring_weights.get('prefer_h265', True)
-        
+
         score = 0.0
-        
+
         # Bitrate score (0-1, normalized to typical range 1000-8000 kbps)
         bitrate = stream_data.get('bitrate_kbps', 0)
         if self._bitrate_payload_value(bitrate) is None:
@@ -386,7 +386,7 @@ class CheckerClassificationMixin:
         if isinstance(bitrate, (int, float)) and bitrate > 0:
             bitrate_score = min(bitrate / 8000, 1.0)
             score += bitrate_score * weights.get('bitrate', 0.40)
-        
+
         # Resolution score (0-1)
         resolution = stream_data.get('resolution', 'N/A')
         resolution_score = 0.0
@@ -407,13 +407,13 @@ class CheckerClassificationMixin:
             except (ValueError, AttributeError):
                 pass
         score += resolution_score * weights.get('resolution', 0.35)
-        
+
         # FPS score (0-1)
         fps = stream_data.get('fps', 0)
         if isinstance(fps, (int, float)) and fps > 0:
             fps_score = min(fps / 60, 1.0)
             score += fps_score * weights.get('fps', 0.15)
-        
+
         # Codec score (0-1)
         codec = str(stream_data.get('video_codec') or '').lower()
         codec_score = 0.0
@@ -425,42 +425,42 @@ class CheckerClassificationMixin:
             elif codec != 'n/a':
                 codec_score = 0.5
         score += codec_score * weights.get('codec', 0.10)
-        
+
         # HDR score (0-1)
         # Give full score for HDR10 or HLG, zero for SDR
         hdr_format = stream_data.get('hdr_format')
         hdr_score = 1.0 if hdr_format in ['HDR10', 'HLG'] else 0.0
         score += hdr_score * weights.get('hdr', 0.10)
-        
+
         return round(score, 2)
 
 
     def _get_priority_boost(self, stream_id: int, stream_data: Dict, priority_m3u_ids: List[int] = None, priority_mode: str = 'absolute') -> float:
         """Calculate priority boost for a stream based on its M3U account priority.
-        
+
         Args:
             stream_id: The stream ID
             stream_data: Stream data dictionary containing resolution and other info
             priority_m3u_ids: List of M3U account IDs in priority order (highest first)
             priority_mode: legacy boost mode, retained for compatibility.
-            
+
         Returns:
             Priority boost value
         """
         try:
             if not priority_m3u_ids:
                 return 0.0
-                
+
             # Get stream from UDI to find its M3U account
             udi = self._checker_get_udi_manager()
             stream = udi.get_stream_by_id(stream_id)
             if not stream:
                 return 0.0
-            
+
             m3u_account_id = self._get_stream_m3u_account_id(stream)
             if not m3u_account_id:
                 return 0.0
-            
+
             priority_rank = self._get_priority_account_rank(m3u_account_id, priority_m3u_ids)
             # Check if this account is in the priority list
             if priority_rank is not None:
@@ -468,7 +468,7 @@ class CheckerClassificationMixin:
                 # Lower index = higher priority
                 index = priority_rank
                 total_accounts = len(priority_m3u_ids)
-                
+
                 if priority_mode == 'equal':
                     # Equal Mode
                     # No priority boost, ranking matches quality exactly
@@ -486,9 +486,9 @@ class CheckerClassificationMixin:
                     # Boost formula: Base 10 + (inverted index count)
                     boost = 10.0 + (total_accounts - index)
                     logger.debug(f"Applying absolute priority boost of {boost} to stream {stream_id}")
-                
+
                 return boost
-            
+
             return 0.0
         except Exception as e:
             logger.error(f"Error calculating priority boost for stream {stream_id}: {e}")
@@ -499,14 +499,14 @@ class CheckerClassificationMixin:
         """Map resolution string to a numeric tier (0-5, lower is better)."""
         if not resolution or 'x' not in str(resolution):
             return 5 # Unknown/N/A
-            
+
         try:
             # Handle list/tuple format if resolution was already parsed elsewhere
             if isinstance(resolution, (list, tuple)):
                 height = int(resolution[1])
             else:
                 width, height = map(int, str(resolution).split('x'))
-                
+
             if height >= 2160: return 0 # 4K
             if height >= 1080: return 1 # 1080p
             if height >= 720:  return 2 # 720p
@@ -518,9 +518,9 @@ class CheckerClassificationMixin:
 
     def _generate_stream_sort_key(self, stream_data: Dict, priority_m3u_ids: List[int] = None, priority_mode: str = 'absolute') -> Tuple:
         """Generate a lexicographical sort key for a stream based on priority tiers.
-        
+
         The sort key is a tuple used for ascending sort (lower is better).
-        
+
         Modes:
         - absolute: AccountRank, ResolutionTier, QualityScore
         - same_resolution: ResolutionTier, AccountRank, QualityScore
@@ -538,14 +538,14 @@ class CheckerClassificationMixin:
                 priority_rank = self._get_priority_account_rank(m3u_id, priority_m3u_ids)
                 if priority_rank is not None:
                     account_rank = priority_rank
-        
+
         # 2. Resolution Tier (0 = highest)
         res_tier = self._get_resolution_tier(stream_data.get('resolution'))
-        
-        
+
+
         # 4. Quality Score (lower is better, so negate the 0-1 scale)
         quality_score = -stream_data.get('score', 0.0)
-        
+
         if priority_mode == 'same_resolution':
             return (res_tier, account_rank, quality_score)
         elif priority_mode == 'playlist_score':

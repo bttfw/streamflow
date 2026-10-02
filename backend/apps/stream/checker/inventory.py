@@ -166,30 +166,30 @@ class CheckerInventoryMixin:
 
     def _get_m3u_account_name(self, stream_id: int, udi=None) -> Optional[str]:
         """Get the M3U account name for a stream.
-        
+
         Args:
             stream_id: The stream ID to look up
             udi: Optional UDI manager instance (will fetch if not provided)
-            
+
         Returns:
             M3U account name or None if not found
         """
         try:
             if udi is None:
                 udi = self._checker_get_udi_manager()
-            
+
             stream_data = udi.get_stream_by_id(stream_id)
             if not stream_data:
                 return None
-            
+
             m3u_account_id = self._get_stream_m3u_account_id(stream_data)
             if not m3u_account_id:
                 return None
-            
+
             m3u_account = udi.get_m3u_account_by_id(m3u_account_id)
             if not m3u_account:
                 return None
-            
+
             return m3u_account.get('name', 'Unknown')
         except Exception as e:
             logger.debug(f"Could not fetch M3U account for stream {stream_id}: {e}")
@@ -365,10 +365,10 @@ class CheckerInventoryMixin:
         provider_limit_override: bool = False,
     ) -> Optional[Dict]:
         """Check if a channel can be checked based on viewer and playlist limits.
-        
+
         This method now uses profile-aware checking. Instead of just checking account-level
         max_streams, it verifies that at least one stream has an available profile slot.
-        
+
         Args:
             channel_id: ID of the channel
             channel_name: Name of the channel
@@ -376,12 +376,12 @@ class CheckerInventoryMixin:
             provider_limit_override: If True, bypass provider/profile capacity
                 skips. Active viewer streams are protected by the channel
                 checker so other streams can still be analyzed.
-            
+
         Returns:
             None if check can proceed, or a result dict if check should be skipped
         """
         udi = self._checker_get_udi_manager()
-        
+
         if provider_limit_override:
             logger.info(
                 "Provider/profile slot guard override enabled for channel %s; "
@@ -389,19 +389,19 @@ class CheckerInventoryMixin:
                 channel_name,
             )
             return None
-        
+
         # Check if at least one stream can run (has an available profile)
         # This replaces the old account-level checking with profile-aware logic
         has_available_slot = False
         blocked_reasons = []
-        
+
         for stream in streams:
             m3u_account = self._get_stream_m3u_account_id(stream)
             if not m3u_account:
                 # Custom stream without M3U account - can always check
                 has_available_slot = True
                 break
-            
+
             # Check if this stream can run using profile-aware checking.
             # If the helper is unavailable in a mocked environment, default to allowing checks.
             check_stream_can_run = getattr(udi, 'check_stream_can_run', None)
@@ -421,7 +421,7 @@ class CheckerInventoryMixin:
             else:
                 if reason and reason not in blocked_reasons:
                     blocked_reasons.append(reason)
-        
+
         # If no stream has an available slot, skip the check
         if not has_available_slot:
             reason_str = "; ".join(blocked_reasons) if blocked_reasons else "All M3U account profiles are at capacity"
@@ -433,7 +433,7 @@ class CheckerInventoryMixin:
                 'skip_reason': 'max_streams_reached',
                 'reason_detail': reason_str
             }
-        
+
         # At least one stream has an available slot, check can proceed
         return None
 

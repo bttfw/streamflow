@@ -111,12 +111,12 @@ class CheckerBatchMixin:
         run_mode: Optional[str] = None,
     ) -> Dict[int, Dict]:
         """Check multiple channels synchronously and return results.
-        
+
         Using this method bypasses the normal worker/scheduler for the batch
         channels. Event-triggered queue entries are still drained serially
         between batch channels so preflight/auto-create checks can run without
         opening parallel provider streams next to the synchronous batch.
-        
+
         Args:
             channel_ids: List of channel IDs to check
             force_check: If True, marks channels for force checking
@@ -126,7 +126,7 @@ class CheckerBatchMixin:
                                stats cached. Used by automation for newly matched streams.
             progress_callback: Optional callback invoked after each channel completes
                                with (completed_count, total_channels, channel_result).
-            
+
         Returns:
             Dict mapping channel_id to result dict (containing dead/revived streams)
         """
@@ -135,7 +135,7 @@ class CheckerBatchMixin:
         # Fast lookup precise stream counts
         from apps.udi import get_udi_manager
         udi = get_udi_manager()
-        
+
         channel_streams = {}
         total_streams = 0
         for channel_id in channel_ids:
@@ -143,7 +143,7 @@ class CheckerBatchMixin:
             stream_count = len(channel.get('streams', [])) if channel else 1
             channel_streams[channel_id] = stream_count
             total_streams += stream_count
-                
+
         with self.lock:
             with self.check_queue.lock:
                 sync_state_active = bool((self.sync_batch_state or {}).get('active'))
@@ -276,7 +276,7 @@ class CheckerBatchMixin:
                     break
 
                 stream_count = channel_streams.get(channel_id, 1)
-                
+
                 with self.lock:
                     if self.sync_batch_state.get('generation') != sync_generation or not self.sync_batch_state.get('active'):
                         logger.info("Synchronous channel batch was cleared; stopping remaining checks")
@@ -284,19 +284,19 @@ class CheckerBatchMixin:
                     self.sync_batch_state['in_progress'] = 1
                     self.sync_batch_state['queued_streams_count'] = max(0, self.sync_batch_state['queued_streams_count'] - stream_count)
                     self.sync_batch_state['in_progress_streams_count'] = stream_count
-                    
+
                 channel_started_monotonic = time.monotonic()
                 try:
                     # Both modes use the smart scheduler. Sequential mode limits
                     # it to one active basis probe so capacity reservations and
                     # deferred bitrate rechecks keep the same contract.
                     concurrent_enabled = self.config.get('concurrent_streams.enabled', True)
-                    
+
                     if target_stream_ids and channel_id in target_stream_ids:
                         stream_id_whitelist = target_stream_ids[channel_id]
                     else:
                         stream_id_whitelist = None
-                        
+
                     if self._checker_get_session_manager().is_channel_in_active_session(channel_id):
                         logger.info(
                             "Skipping synchronous quality check for monitored channel %s",
@@ -325,7 +325,7 @@ class CheckerBatchMixin:
                             global_limit_override=1,
                             force_check_override=force_check,
                         )
-                        
+
                     results[channel_id] = channel_result
                     with self.lock:
                         if self.sync_batch_state.get('generation') == sync_generation and self.sync_batch_state.get('active'):
@@ -419,6 +419,6 @@ class CheckerBatchMixin:
                         # the worker sets checking when it actually starts.
                         self.checking = False
             self._apply_specialized_queue_deferral()
-                
+
         return results
 
