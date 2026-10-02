@@ -790,7 +790,7 @@ export default function Dashboard() {
   const visibleViewerChannels = viewerChannels.slice(0, 6)
   const hiddenViewerChannelCount = Math.max(0, viewerChannels.length - visibleViewerChannels.length)
   const latestRecordedRun = runHistoryBaseline.latest
-  const overviewMetrics = displayRunMetrics.filter(metric => ['checked', 'good', 'dead', 'hidden'].includes(metric.key))
+  const overviewMetrics = displayRunMetrics.filter(metric => ['checked', 'good', 'dead', 'hidden', 'ready'].includes(metric.key))
 
   const syncBadgeClass =
     syncStatus === 'completed' ? 'bg-green-600 text-white border-transparent' :
@@ -960,7 +960,7 @@ export default function Dashboard() {
               </div>
             )}
 
-            <div className="grid grid-cols-2 gap-3 border-t pt-4 sm:grid-cols-4">
+            <div className="grid grid-cols-2 gap-3 border-t pt-4 sm:grid-cols-3 lg:grid-cols-5">
               {overviewMetrics.map(metric => (
                 <div key={metric.key} className="min-w-0" title={metric.description}>
                   <div className="text-xs text-muted-foreground">{metric.label}</div>

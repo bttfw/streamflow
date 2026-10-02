@@ -232,6 +232,19 @@ Executed locally during draft validation:
 - Existing preflight/checker statistics tests and provider fixtures are adapted
   to the extracted writer and fresh metadata boundary.
 
+## Dashboard quick-metric follow-up - 2026-10-02
+
+- Added `Channels Restored` immediately after `Channels Hidden` in the always
+  visible run overview. It uses the existing `ready`/`channels_ready` metric and
+  the same run/source selection as the expanded detail cards; it counts channels
+  actively restored during that run rather than all currently visible channels.
+- The overview uses five columns on wide screens, three on medium screens, and
+  two on narrow screens. No backend or connector contract changed.
+- Dashboard count/display tests: 50 passed; frontend production build passed.
+  Browser fixtures checked a restored value of 3 and its update to 0, five
+  metrics in one desktop row, and three wrapped mobile rows at 390 pixels,
+  without browser exceptions or clipped labels.
+
 ## Validation limits
 
 - Native browser hide/return transitions could not be reproduced in this test
