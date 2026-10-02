@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Regression tests for stream-checker queue clear/abort lifecycle."""
 
+import inspect
 import json
 import os
 import sys
@@ -3658,13 +3659,13 @@ class TestStreamCheckQueueLifecycle(unittest.TestCase):
         self.assertEqual(StreamCheckerService._result_good_streams_count(result), 3)
 
     def test_channel_reporting_preserves_dead_stream_cause_details(self):
-        source_path = (
-            Path(__file__).resolve().parents[1]
-            / "apps"
-            / "stream"
-            / "stream_checker_service.py"
+        source = "\n".join(
+            inspect.getsource(method)
+            for method in (
+                StreamCheckerService._check_channel_concurrent,
+                StreamCheckerService._check_channel_sequential,
+            )
         )
-        source = source_path.read_text(encoding="utf-8")
 
         self.assertIn("report_analyzed_streams = list(analyzed_streams)", source)
         self.assertIn("for analyzed in report_analyzed_streams:", source)

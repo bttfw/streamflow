@@ -21,6 +21,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **Automation run stream health metrics** - Added a dashboard `Good Streams` metric and a compact `Checking now` row for active quality batches.
 
 ### Changed
+- **Stream Checker decomposition** - Move checker responsibilities into focused modules while preserving the public service, shared state, ownership tokens and lock ordering; see the [architecture map](docs/stream-checker-architecture.md).
 - **Dashboard quick metrics** - Show Channels Restored beside Channels Hidden using the same run counters as the detailed metrics, with five columns on wide screens and wrapping on smaller displays.
 - **Preflight admission** - Catch up to the newest crossed checkpoint, retry missing streams within bounded windows, and revalidate queued event/channel identity before execution. Catalog refreshes run separately with a short metadata cache.
 - **Control-plane and UI work** - Reuse thread-owned HTTP connections, coalesce concurrent channel reads, detect stable-ID source changes, revalidate status with ETags, pause serial browser polling when hidden, and render visible stream rows with isolated countdowns.

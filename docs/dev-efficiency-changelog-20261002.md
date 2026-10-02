@@ -250,6 +250,21 @@ Executed locally during draft validation:
   remains pending while the existing checker batch is active; the running image
   remains at `ce7881e0`.
 
+## Checker decomposition follow-up - 2026-10-02
+
+- Reduced `stream_checker_service.py` from 10,862 to 906 lines by moving 113
+  methods into the `apps.stream.checker` package. The facade retains construction,
+  lifecycle/worker dispatch, configuration updates, and its public singleton.
+- Queue ownership, capacity/inventory, classification, bitrate rechecks,
+  connectivity, status/changelog, run snapshots, and each execution mode have
+  focused modules; their behaviors share the original service state and locks.
+- Kept callable identity and facade dependency bindings, the patchable heartbeat
+  interval, original local imports, and version-file lookup semantics intact.
+- Source-AST equivalence passed for the relocated method bodies after reversing
+  dependency access. The first targeted runtime set passed 215 regressions.
+- Full-suite and image/runtime validation of this decomposition are pending.
+  Boundaries are documented in [Stream Checker architecture](stream-checker-architecture.md).
+
 ## Validation limits
 
 - Native browser hide/return transitions could not be reproduced in this test
