@@ -340,3 +340,42 @@ Executed locally during draft validation:
 - Live validation covered startup, UI and a completed seven-stream preflight.
   The restarted scheduled 222-channel quality run continues independently; its
   final result is not included in this validation record.
+
+## Matrix appearance - 2026-10-03
+
+- Additional optional `matrix` appearance uses neutral black/charcoal surfaces
+  and green primary/focus colors. Theme selection retains the existing
+  `localStorage.theme` persistence; its effective mode remains `dark`.
+- Theme-scoped colors fill the active navigation item and remove the blue
+  body gradient. Switching to Light, Dark or Auto removes the Matrix class.
+- UI structure, radius, spacing, status meanings, polling and backend behavior
+  are unchanged. Existing semantic warning/error/information colors remain.
+- Frontend verification: 295 tests passed across 39 files; production build
+  passed. Browser checks of the built UI with read-only live API data passed
+  47 checks covering selection pairs, reload persistence, Auto system changes,
+  Matrix isolation, computed colors, menu closure, layout axes and mobile
+  navigation. No browser exceptions or backend mutation requests occurred.
+- The image build, native Unraid DockerMan deployment and repeated live browser
+  validation are pending. The theme changes no backend code or dependencies.
+
+See [Matrix theme details](matrix-theme.md) for palette and validation scope.
+
+## Completed scheduled full-run audit - 2026-10-03
+
+- Persisted automation run `6525` completed at `09:20:33` Europe/Berlin after
+  45,032 seconds (12h 30m 32s), with all 222 regular channels checked. Provider
+  refresh completed with zero failed providers/requests; runtime logs contain
+  no aborted/failed automation quality stage.
+- The run recorded 3,188 analyzed streams: 2,680 good and 508 dead. The dead
+  results include overlapping blank/freeze evidence; these classifications are
+  media-quality findings rather than failed channel executions. 67 streams were
+  revived, two channels were hidden after all their streams failed, and no
+  channels were restored. The recorded assigned-stream count is 2,849.
+- Specialized preflight work during the long batch rejected 93 expired queued
+  entries before media work and one concurrent assignment-order conflict before
+  a stale PATCH. Later preflights for the conflicted channel completed, including
+  telemetry runs `6522` and `6524`. Regular automation completed successfully;
+  preflight subsequently resumed with no current service/Teamarr error.
+- No name/import/module/attribute errors appeared in runtime logs. This audit
+  records successful execution and source safeguards; it does not establish a
+  production speedup from the decomposition or control-plane changes.
