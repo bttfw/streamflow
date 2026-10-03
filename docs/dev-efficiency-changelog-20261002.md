@@ -337,9 +337,9 @@ Executed locally during draft validation:
   metadata reads, fewer duplicate reads, and connection reuse has not been
   benchmarked against representative production workloads; no measured speedup
   is claimed.
-- Live validation covered startup, UI and a completed seven-stream preflight.
-  The restarted scheduled 222-channel quality run continues independently; its
-  final result is not included in this validation record.
+- The initial 2026-10-02 live validation covered startup, UI and a completed
+  seven-stream preflight. The subsequent completed 222-channel quality run is
+  recorded in the 2026-10-03 full-run audit below.
 
 ## Matrix appearance - 2026-10-03
 
@@ -355,8 +355,25 @@ Executed locally during draft validation:
   47 checks covering selection pairs, reload persistence, Auto system changes,
   Matrix isolation, computed colors, menu closure, layout axes and mobile
   navigation. No browser exceptions or backend mutation requests occurred.
-- The image build, native Unraid DockerMan deployment and repeated live browser
-  validation are pending. The theme changes no backend code or dependencies.
+- The [amd64/arm64 image build](https://github.com/bttfw/streamflow/actions/runs/37107403968)
+  passed at `bf5ddba644c15df49bafa7f7c55e8319927acf84`. Native DockerMan updated
+  the existing container through its unchanged GUI-editable template after
+  consistent SQLite/config and template backups. The actual image revision
+  matches; the container is healthy and ready. Host configuration, network,
+  mounts and environment values match the pre-update snapshot.
+- All 47 checks passed again against the deployed frontend. Four pages and
+  desktop/mobile theme selection loaded without page exceptions or backend
+  mutation requests. Five visually reviewed, IP-masked live screenshots are
+  stored under `docs/pr-screenshots/` and linked from the theme details.
+- Backend stable CI passed 1,984 tests (1 skipped, 58 deselected); 57 isolated
+  integration contracts and both CodeQL languages passed. The
+  [frontend CI job](https://github.com/krinkuto11/streamflow/actions/runs/37107370737/job/111158435690)
+  failed at its existing dependency-audit gate before test/build steps. The
+  newly reported high-severity [braces advisory](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm)
+  affects the existing Tailwind 3 build dependency chain; no patched version
+  was listed at validation time. Local frontend tests/build and the image/live
+  browser checks passed. The audit gate remains unchanged and failing. The
+  theme changes no backend code or dependencies.
 
 See [Matrix theme details](matrix-theme.md) for palette and validation scope.
 

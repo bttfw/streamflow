@@ -50,6 +50,47 @@ changes, Matrix isolation from system changes, keyboard menu closure, computed
 palette/selected navigation colors, unchanged layout axes, four pages and mobile
 navigation/theme switching.
 
-The image build, native Unraid DockerMan deployment and repeated live browser
-validation are pending. Screenshots will document the deployed UI with IP text
-masked; they are review artifacts outside the application image.
+The [amd64/arm64 image build](https://github.com/bttfw/streamflow/actions/runs/37107403968)
+passed at `bf5ddba644c15df49bafa7f7c55e8319927acf84`. Native Unraid DockerMan
+updated the existing container through its GUI-editable template after a
+consistent SQLite/config and template backup. The deployed container is healthy
+and ready; host configuration, network, mounts and environment values match the
+pre-update snapshot.
+
+All 47 browser checks passed again against that deployed image, with no page
+exceptions or backend mutation requests. Desktop and 390-pixel mobile captures
+were visually reviewed. They use actual live data; IP text is masked before
+capture. These review artifacts are outside the application image.
+
+Backend stable/integration and both CodeQL checks passed for the theme commit.
+The [frontend CI job](https://github.com/krinkuto11/streamflow/actions/runs/37107370737/job/111158435690)
+stopped at the unchanged high-severity dependency audit before its test/build
+steps. The existing Tailwind 3 dependency chain contains `braces <=3.0.3`,
+covered by [GHSA-vfj7-8cjw-p6xm](https://github.com/advisories/GHSA-vfj7-8cjw-p6xm).
+At validation time the advisory lists no patched version. Local frontend tests,
+the production build, the image build and deployed browser checks passed; this
+does not make the dependency audit pass. No dependency migration or audit-gate
+change is included in this color-only update.
+
+## Deployed UI screenshots
+
+Desktop Dashboard, including the existing Channels Restored metric:
+
+![Matrix Dashboard on desktop](pr-screenshots/pr462-matrix-dashboard-desktop.png)
+
+Stream Checker with actual Teamarr Preflight work and provider capacity states:
+
+![Matrix Stream Checker on desktop](pr-screenshots/pr462-matrix-stream-checker-desktop.png)
+
+Appearance selector:
+
+![Matrix option in the appearance menu](pr-screenshots/pr462-matrix-theme-menu.png)
+
+<details>
+<summary>Mobile Dashboard and navigation at 390 pixels</summary>
+
+![Matrix Dashboard on mobile](pr-screenshots/pr462-matrix-dashboard-mobile.png)
+
+![Matrix mobile navigation](pr-screenshots/pr462-matrix-navigation-mobile.png)
+
+</details>
