@@ -354,3 +354,14 @@ def test_history_sample_count_and_duration_are_both_required():
                              samples=samples, stalls=0, failovers=0)], 0)
         row = repository.summaries(0, aggregate_streams=True)[0]
         assert row['eligible'] == (duration >= 600 and samples >= 60)
+
+
+def test_legacy_retry_baseline_is_neutral_without_source_evidence():
+    # Retry classification historically uses global weights even in a profile.
+    # Its passive deduction must not accidentally replace those weights.
+    baseline = Scorer()._calculate_stream_score(quality())
+    weights = {'bitrate': 0, 'resolution': 0, 'fps': 0, 'codec': 0,
+               'use_playback_stability': True, '_playback_stability': {2: 0}}
+    assert Scorer()._apply_playback_stability_score(baseline, quality(), weights) == baseline
+    weights['_playback_stability'] = {1: 0}
+    assert Scorer()._apply_playback_stability_score(baseline, quality(), weights) == baseline * .85

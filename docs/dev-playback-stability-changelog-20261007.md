@@ -41,6 +41,9 @@
   keep their existing priority rules.
 - Sequential and concurrent channel checks obtain one immutable evidence snapshot
   per channel. One-off source probes without a channel/profile remain unchanged.
+- The legacy sequential retry retains its existing global quality weights. Its
+  optional stability deduction is applied separately, so adding the feature cannot
+  silently change that retry's baseline for an unobserved source.
 
 ## Settings and history
 
@@ -71,7 +74,7 @@
 - Initial focused backend coverage: 48 tests passed, including missing evidence,
   Teamarr parity, stalls, session changes, API outages, restart persistence, source
   replacement, retention, cross-channel aggregation and disable-during-poll races.
-- Extended focused backend coverage: 54 tests passed, including real Flask routes,
+- Extended focused backend coverage: 55 tests passed, including real Flask routes,
   profile/config persistence and freshness/eligibility boundaries.
 - Final expanded stable backend suite: 2,038 passed, one skipped;
   integration contracts: 57 passed, one skipped.

@@ -861,7 +861,10 @@ class CheckerSequentialChannelMixin:
                         hardware_acceleration=analysis_params.get('hardware_acceleration')
                     )
                     self._update_stream_stats(analyzed)
-                    score = self._calculate_stream_score(analyzed, priority_m3u_ids, priority_mode, scoring_weights)
+                    # This legacy retry path uses global quality weights. Keep
+                    # that baseline intact and apply only eligible history.
+                    score = self._calculate_stream_score(analyzed, priority_m3u_ids, priority_mode)
+                    score = round(self._apply_playback_stability_score(score, analyzed, scoring_weights), 2)
                     analyzed['score'] = score
                     analyzed_streams.append(analyzed)
 

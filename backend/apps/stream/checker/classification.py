@@ -447,6 +447,10 @@ class CheckerClassificationMixin:
         hdr_score = 1.0 if hdr_format in ['HDR10', 'HLG'] else 0.0
         score += hdr_score * weights.get('hdr', 0.10)
 
+        return round(self._apply_playback_stability_score(score, stream_data, scoring_weights), 2)
+
+    @staticmethod
+    def _apply_playback_stability_score(score: float, stream_data: Dict, scoring_weights: Optional[Dict]) -> float:
         # This is a bounded deduction from the existing score, not a new weight
         # in its denominator. Missing evidence leaves the score exactly intact.
         if scoring_weights and scoring_weights.get('use_playback_stability') is True:
@@ -457,7 +461,7 @@ class CheckerClassificationMixin:
                     and not isinstance(weight, bool) and 0 <= weight <= 1):
                 score *= 1 - weight * (1 - stability)
                 stream_data['playback_stability_score'] = round(stability * 100, 1)
-        return round(score, 2)
+        return score
 
 
     def _get_priority_boost(self, stream_id: int, stream_data: Dict, priority_m3u_ids: List[int] = None, priority_mode: str = 'absolute') -> float:
