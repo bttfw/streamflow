@@ -16,8 +16,9 @@
 - History uses checkpointed rows in `playback_observations`, including during an
   active playback. Restarting preserves confirmed history without treating the
   unobserved restart interval as a failure. Long sessions rotate checkpoints every
-  ten minutes. Retention is evaluated using each checkpoint's last observed time,
-  with at most ten minutes of boundary overlap.
+  approximately ten minutes. Retention is evaluated using each checkpoint's last
+  observed time, with a boundary overlap bounded by one checkpoint segment
+  (ten minutes plus at most one valid sampling gap).
 - Evidence is tied to the Dispatcharr stream ID and a hash of its source URL.
   Viewer identities, IP addresses, provider credentials and source URLs are not
   stored in the history. A changed URL cannot inherit an older source's evidence.
@@ -76,13 +77,13 @@
   replacement, retention, cross-channel aggregation and disable-during-poll races.
 - Extended focused backend coverage: 55 tests passed, including real Flask routes,
   profile/config persistence and freshness/eligibility boundaries.
-- Final expanded stable backend suite: 2,038 passed, one skipped;
+- Final expanded stable backend suite: 2,039 passed, one skipped;
   integration contracts: 57 passed, one skipped.
 - Frontend: all 302 tests passed; production build passed. Six browser scenarios
   covered default-off settings, save/reload, independent profile opt-in, editable
   weight, master-off gating and isolated settings-load failures, with no page errors.
 - Profile step buttons now expose accessible names and their selected state.
-- Normal Unraid DockerMan validation is pending.
+- Backend stable suite and integration contracts also passed on GitHub/Linux.
 
 ## Backend dependency audit
 
@@ -91,3 +92,45 @@
   Werkzeug 3.1.9, retaining hash-verified installation. Release artifacts and
   SHA-256 hashes were checked against https://pypi.org/project/Werkzeug/3.1.9/.
 - The existing frontend dependency audit is unchanged; no check is disabled.
+
+## Live Unraid validation
+
+- Built amd64 and arm64 images through the existing GitHub build workflow and
+  updated the existing `streamflow` container through Unraid's native DockerMan
+  `update_container` command. The GUI template points to
+  `ghcr.io/bttfw/streamflow:streamflow-playback-stability-20261007`.
+- Tested code revision: `f7a4abf78b01e140bcf67d42fdfa58a3e38b6d50`.
+  Host configuration, mounts, GPU/runtime options, network binding and the
+  environment hash matched the previous container. A consistent SQLite backup
+  and template backup were created before deployment.
+- Confirmed the initial global default was off. Enabled recording through the
+  real Settings UI, verified persistence after reload and checked independent
+  profile opt-in/weight controls. Both UI runs completed without page errors.
+- Observed an existing real playback for 601.5 seconds with 61 confirmed samples.
+  The source remained unscored before the eligibility boundary and then reached
+  a stability value of 1.0, with zero observed stalls and failovers. The existing
+  viewer stayed attached throughout the observation.
+- Resolved this persisted real source history through the deployed scoring
+  snapshot and confirmed that a measured stable source receives no deduction.
+  No provider connection or channel update was issued by the scoring verification.
+- Exercised deployed Linux tracker/repository/scoring modules against an isolated
+  in-memory database: a simulated unstable source scored 0.77 while a stable source
+  and an unobserved source both retained their 0.90 quality score. API outage,
+  global disable and equal Teamarr handling were also checked. Synthetic data
+  was never written into the live playback history.
+- Verified profile persistence through the live API with a disabled, unassigned
+  temporary profile; removed that test profile afterward.
+- Restored the original global settings through the UI: recording off, ten-second
+  interval, fourteen-day retention. Existing profiles were not opted into scoring.
+- The deployed runtime used Python 3.11.17 and Werkzeug 3.1.9. SQLite quick-check
+  passed; startup/observation logs contained no tracebacks, import errors or
+  recorder poll errors.
+
+### UI references
+
+The following are cropped screenshots of the actual Unraid-hosted interface;
+they contain no viewer identity, provider URL or connection credentials.
+
+![Settings → Monitoring → Playback Stability](review-assets/playback-stability-settings.png)
+
+![Profile → Stream Checking → Stream Quality Scoring](review-assets/playback-stability-profile-scoring.png)
