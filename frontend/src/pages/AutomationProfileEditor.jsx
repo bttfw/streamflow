@@ -321,6 +321,8 @@ export default function AutomationProfileEditor() {
                         return (
                             <div key={step.id} className="flex flex-col items-center">
                                 <button
+                                    aria-label={`Configure ${step.label}`}
+                                    aria-pressed={active}
                                     onClick={() => setActiveStep(step.id)}
                                     className={cn(
                                         "w-10 h-10 rounded-full border-4 flex items-center justify-center transition-all duration-300",

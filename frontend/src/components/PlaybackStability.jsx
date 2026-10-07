@@ -58,7 +58,9 @@ export default function PlaybackStabilitySettings() {
   const { toast } = useToast()
   useEffect(() => {
     const controller = new AbortController()
-    playbackStabilityAPI.getConfig({ signal: controller.signal }).then(({ data }) => setConfig(data)).catch(() => {
+    playbackStabilityAPI.getConfig({ signal: controller.signal }).then(({ data }) => {
+      if (!controller.signal.aborted) setConfig(data)
+    }).catch(() => {
       if (!controller.signal.aborted) setError('Playback Stability settings could not load. Reload before saving.')
     })
     return () => controller.abort()
@@ -76,9 +78,13 @@ export default function PlaybackStabilitySettings() {
     try {
       const { data } = await playbackStabilityAPI.updateConfig(config)
       setConfig(data)
-      const result = await playbackStabilityAPI.getStatus()
-      setStatus(result.data)
       toast({ title: 'Playback Stability settings saved' })
+      try {
+        const result = await playbackStabilityAPI.getStatus()
+        setStatus(result.data)
+      } catch {
+        setStatus({ enabled: data.enabled, error: 'Playback history could not load.', streams: [] })
+      }
     } catch {
       toast({ title: 'Playback Stability settings could not save', variant: 'destructive' })
     } finally { setSaving(false) }

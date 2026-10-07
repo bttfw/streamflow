@@ -71,4 +71,12 @@
 - Initial focused backend coverage: 48 tests passed, including missing evidence,
   Teamarr parity, stalls, session changes, API outages, restart persistence, source
   replacement, retention, cross-channel aggregation and disable-during-poll races.
-- Full suites, frontend checks and normal Unraid DockerMan validation pending.
+- Extended focused backend coverage: 54 tests passed, including real Flask routes,
+  profile/config persistence and freshness/eligibility boundaries.
+- Stable backend suite: 2,032 passed, one skipped before the final additional tests;
+  integration contracts: 57 passed, one skipped. The final stable rerun is pending.
+- Frontend: all 302 tests passed; production build passed. Six browser scenarios
+  covered default-off settings, save/reload, independent profile opt-in, editable
+  weight, master-off gating and isolated settings-load failures, with no page errors.
+- Profile step buttons now expose accessible names and their selected state.
+- Normal Unraid DockerMan validation is pending.
