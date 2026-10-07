@@ -163,6 +163,7 @@ class CheckerSequentialChannelMixin:
         except Exception as e:
             logger.warning(f"Failed to load profile settings for channel {channel_id}: {e}")
             _threshold_config = {}
+        scoring_weights = self._prepare_playback_scoring(scoring_weights, channel_id)
         profile_progress_context = self._automation_profile_progress_context(
             profile,
             forced_profile_id=forced_profile_id,
@@ -860,7 +861,7 @@ class CheckerSequentialChannelMixin:
                         hardware_acceleration=analysis_params.get('hardware_acceleration')
                     )
                     self._update_stream_stats(analyzed)
-                    score = self._calculate_stream_score(analyzed, priority_m3u_ids, priority_mode)
+                    score = self._calculate_stream_score(analyzed, priority_m3u_ids, priority_mode, scoring_weights)
                     analyzed['score'] = score
                     analyzed_streams.append(analyzed)
 
