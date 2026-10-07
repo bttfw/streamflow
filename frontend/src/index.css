@@ -106,6 +106,15 @@
   background-size: 20px 20px;
 }
 
+@layer utilities {
+  /* Theme overrides must share the utilities layer in Tailwind 4. */
+  .dark.matrix nav[aria-label='Pages'] a[aria-current='page'] {
+    background-color: hsl(var(--primary));
+    border-color: hsl(var(--primary));
+    color: hsl(var(--primary-foreground));
+  }
+}
+
 @layer base {
   :root {
     --background: 210 30% 98%;
