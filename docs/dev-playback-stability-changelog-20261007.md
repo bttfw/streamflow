@@ -73,10 +73,18 @@
   replacement, retention, cross-channel aggregation and disable-during-poll races.
 - Extended focused backend coverage: 54 tests passed, including real Flask routes,
   profile/config persistence and freshness/eligibility boundaries.
-- Stable backend suite: 2,032 passed, one skipped before the final additional tests;
-  integration contracts: 57 passed, one skipped. The final stable rerun is pending.
+- Final expanded stable backend suite: 2,038 passed, one skipped;
+  integration contracts: 57 passed, one skipped.
 - Frontend: all 302 tests passed; production build passed. Six browser scenarios
   covered default-off settings, save/reload, independent profile opt-in, editable
   weight, master-off gating and isolated settings-load failures, with no page errors.
 - Profile step buttons now expose accessible names and their selected state.
 - Normal Unraid DockerMan validation is pending.
+
+## Backend dependency audit
+
+- GitHub's backend audit reported CVE-2026-102598 in the existing Werkzeug 3.1.8
+  pin before reaching the test step. Updated the production and test locks to
+  Werkzeug 3.1.9, retaining hash-verified installation. Release artifacts and
+  SHA-256 hashes were checked against https://pypi.org/project/Werkzeug/3.1.9/.
+- The existing frontend dependency audit is unchanged; no check is disabled.
