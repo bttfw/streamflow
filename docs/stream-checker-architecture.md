@@ -58,9 +58,14 @@ Teamarr's `max_concurrent_checks` is a game-job limit, independent of
 `concurrent_streams.global_limit`, which limits actual media probes. The default
 of 1 retains serial execution. Values above 1 route preflights through the
 existing priority queue; the worker dispatches bounded jobs from that queue.
-Each completed job makes room for the next queued game without waiting for
-other games' long loop phases. Ordinary checks and full automation remain
-exclusive and keep their existing queue gates.
+Each completed job makes room for the next eligible entry in priority and
+arrival order across all queue sources. A Teamarr game can fill that slot
+without waiting for other games' long loop phases. If ordinary work is next,
+no further games are admitted: active games finish and release their ownership,
+then the ordinary worker handles that entry. Running games are not interrupted.
+Ordinary checks and full automation remain exclusive and keep their existing
+queue gates. Admission checks ordering and activates a matching entry under the
+same queue lock; an ordinary entry is left queued with its original token.
 
 `checker/parallel_preflight.py` owns dispatch. `checker/preflight_run.py` is an
 execution-only context: it reuses the queue, provider limiter, trackers and

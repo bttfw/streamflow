@@ -1137,8 +1137,15 @@ class StreamCheckQueue:
 
     def get_next_entry_for_metadata_sources(
         self, sources: set, *, respect_pause: bool = False, excluded_channel_ids=None,
+        respect_queue_order: bool = False,
     ) -> Optional[Dict[str, Any]]:
-        """Pop the highest-priority queued entry whose metadata source matches."""
+        """Pop a matching entry, optionally only if it is next across all sources.
+
+        Ordered admission skips deferred sources and excluded channels, but
+        leaves the first eligible nonmatching entry queued for its owner.
+        Selection and activation share the queue lock so no peek/pop race can
+        bypass ordinary work. Selective synchronous draining keeps its default.
+        """
         wanted_sources = set(sources or set())
         if not wanted_sources:
             return None
@@ -1165,10 +1172,18 @@ class StreamCheckQueue:
                         continue
 
                     metadata = self.queued_metadata.get(channel_id, {}) or {}
+                    if respect_queue_order and (
+                        channel_id in excluded
+                        or metadata.get("source") in self.deferred_metadata_sources
+                    ):
+                        deferred_items.append(item)
+                        continue
                     if metadata.get("source") in wanted_sources and channel_id not in excluded:
                         return self._activate_queued_entry_locked(channel_id)
 
                     deferred_items.append(item)
+                    if respect_queue_order:
+                        return None
             finally:
                 for item in deferred_items:
                     self.queue.put_nowait(item)

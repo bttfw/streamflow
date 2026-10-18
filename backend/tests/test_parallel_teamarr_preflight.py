@@ -52,6 +52,182 @@ def parallel_checker(monkeypatch):
     wait_until(lambda: not getattr(checker, "_parallel_preflight_runs", {}))
 
 
+@pytest.fixture
+def mixed_queue_checker(monkeypatch):
+    """Keep the mixed worker and token ownership real; control media duration."""
+    monkeypatch.setattr(
+        "apps.stream.teamarr_preflight_service.get_teamarr_preflight_service",
+        lambda: SimpleNamespace(get_config=lambda: {"max_concurrent_checks": 2}),
+    )
+    checker = StreamCheckerService()
+    entered = {cid: threading.Event() for cid in (1, 2, 3, 99)}
+    release = {cid: threading.Event() for cid in entered}
+    started = []
+    tokens = {}
+
+    def media_phase(run, cid, *, queue_entry_token, **kwargs):
+        assert checker.check_queue.owns_in_progress(cid, queue_entry_token)
+        assert (cid, queue_entry_token) in checker._active_queue_entry_executions
+        assert not checker.check_queue.mark_completed(cid, entry_token=-1)
+        tokens[cid] = queue_entry_token
+        started.append(cid)
+        entered[cid].set()
+        assert release[cid].wait(10)
+        assert run._complete_channel_check(cid, queue_entry_token=queue_entry_token)
+
+    def preflight_phase(run, entry, **kwargs):
+        media_phase(run, entry["channel_id"], queue_entry_token=entry["queue_entry_token"])
+
+    monkeypatch.setattr(StreamCheckerService, "_check_channel", media_phase)
+    monkeypatch.setattr(StreamCheckerService, "_run_specialized_queue_entry_owned", preflight_phase)
+    worker = threading.Thread(target=checker._worker_loop, daemon=True)
+    yield SimpleNamespace(
+        checker=checker, entered=entered, release=release, started=started,
+        tokens=tokens, worker=worker,
+    )
+    checker.running = False
+    for event in release.values():
+        event.set()
+    if worker.ident is not None:
+        worker.join(3)
+        assert not worker.is_alive()
+    wait_until(lambda: not checker._parallel_preflight_runs)
+
+
+@pytest.mark.parametrize("ordinary_priority, ordinary_first", [(100, True), (1000, False)])
+def test_mixed_worker_runs_ordinary_head_before_teamarr(
+    mixed_queue_checker, ordinary_priority, ordinary_first,
+):
+    """Filtering for games must not bypass the priority/FIFO queue winner."""
+    state = mixed_queue_checker
+    checker = state.checker
+    queue = checker.check_queue
+    if ordinary_first:
+        assert queue.add_channel(99, priority=ordinary_priority)
+    assert queue.add_channel(1, priority=100, metadata={"source": "teamarr_preflight"})
+    if not ordinary_first:
+        assert queue.add_channel(99, priority=ordinary_priority)
+    original_tokens = dict(queue.queued_sequences)
+    checker.running = True
+    state.worker.start()
+
+    wait_until(lambda: state.started)
+    assert state.started == [99]
+    assert not state.entered[1].is_set()
+    assert set(queue.in_progress) == {99}
+    assert queue.queued_sequences[1] == original_tokens[1]
+    state.release[99].set()
+    assert state.entered[1].wait(3)
+    assert state.started == [99, 1]
+    assert state.tokens == original_tokens
+    state.release[1].set()
+    wait_until(lambda: queue.get_status()["completed"] == 2)
+
+
+def test_mixed_worker_drains_games_for_ordinary_head_before_refilling_slot(mixed_queue_checker):
+    """A waiting ordinary winner stops refill, then owns the actual worker."""
+    state = mixed_queue_checker
+    checker = state.checker
+    queue = checker.check_queue
+    for cid in (1, 2, 3):
+        assert queue.add_channel(cid, priority=100, metadata={"source": "teamarr_preflight"})
+    assert checker._dispatch_parallel_preflight_checks()
+    assert state.entered[1].wait(2)
+    assert checker._dispatch_parallel_preflight_checks()
+    assert state.entered[2].wait(2)
+    assert queue.add_channel(99, priority=1000)
+    original_waiting_tokens = dict(queue.queued_sequences)
+
+    state.release[1].set()
+    wait_until(lambda: len(checker._parallel_preflight_runs) == 1)
+    assert checker._dispatch_parallel_preflight_checks()
+    assert not state.entered[3].is_set()
+    assert not state.entered[99].is_set()
+    assert queue.queued_sequences == original_waiting_tokens
+    assert set(queue.in_progress) == {2}
+
+    checker.running = True
+    state.worker.start()
+    state.release[2].set()
+    wait_until(lambda: state.entered[99].is_set() or state.entered[3].is_set())
+    assert state.started == [1, 2, 99]
+    assert not checker._parallel_preflight_runs
+    assert not state.entered[3].is_set()
+    assert set(queue.in_progress) == {99}
+    state.release[99].set()
+    assert state.entered[3].wait(3)
+    assert state.started == [1, 2, 99, 3]
+    assert state.tokens[99] == original_waiting_tokens[99]
+    assert state.tokens[3] == original_waiting_tokens[3]
+    state.release[3].set()
+    wait_until(lambda: queue.get_status()["completed"] == 4)
+
+
+@pytest.mark.parametrize("ordinary_priority", [0, 100])
+def test_mixed_worker_starts_teamarr_when_game_wins_queue_order(
+    mixed_queue_checker, ordinary_priority,
+):
+    state = mixed_queue_checker
+    checker = state.checker
+    queue = checker.check_queue
+    assert queue.add_channel(1, priority=100, metadata={"source": "teamarr_preflight"})
+    assert queue.add_channel(99, priority=ordinary_priority)
+    original_tokens = dict(queue.queued_sequences)
+    checker.running = True
+    state.worker.start()
+
+    assert state.entered[1].wait(2)
+    assert state.started == [1]
+    assert not state.entered[99].is_set()
+    state.release[1].set()
+    assert state.entered[99].wait(3)
+    assert state.started == [1, 99]
+    assert not checker._parallel_preflight_runs
+    assert state.tokens == original_tokens
+    state.release[99].set()
+    wait_until(lambda: queue.get_status()["completed"] == 2)
+
+
+def test_deferred_ordinary_source_does_not_block_eligible_game(mixed_queue_checker):
+    state = mixed_queue_checker
+    checker = state.checker
+    queue = checker.check_queue
+    assert queue.add_channel(99, priority=1000, metadata={"source": "deferred_manual"})
+    assert queue.add_channel(1, priority=100, metadata={"source": "teamarr_preflight"})
+    ordinary_token = queue.queued_sequences[99]
+    queue.defer_metadata_sources({"deferred_manual"})
+
+    assert checker._dispatch_parallel_preflight_checks()
+    assert state.entered[1].wait(2)
+    assert state.started == [1]
+    assert queue.queued_sequences[99] == ordinary_token
+    assert set(queue.in_progress) == {1}
+    state.release[1].set()
+    wait_until(lambda: not checker._parallel_preflight_runs)
+
+    queue.defer_metadata_sources(set())
+    checker.running = True
+    state.worker.start()
+    assert state.entered[99].wait(3)
+    assert state.started == [1, 99]
+    assert state.tokens[99] == ordinary_token
+    state.release[99].set()
+    wait_until(lambda: queue.get_status()["completed"] == 2)
+
+
+def test_selective_metadata_dequeue_retains_synchronous_drain_behavior(mixed_queue_checker):
+    queue = mixed_queue_checker.checker.check_queue
+    assert queue.add_channel(99, priority=1000)
+    assert queue.add_channel(1, priority=100, metadata={"source": "teamarr_preflight"})
+    original_tokens = dict(queue.queued_sequences)
+
+    entry = queue.get_next_entry_for_metadata_sources({"teamarr_preflight"})
+    assert entry["channel_id"] == 1
+    assert entry["queue_entry_token"] == original_tokens[1]
+    assert queue.queued_sequences == {99: original_tokens[99]}
+    assert queue.mark_completed(1, entry_token=entry["queue_entry_token"])
+
+
 def test_parallel_games_fill_vacated_slot_without_waiting_for_other_loop(parallel_checker):
     checker, _, entered, release, runs = parallel_checker
     assert checker._dispatch_parallel_preflight_checks()

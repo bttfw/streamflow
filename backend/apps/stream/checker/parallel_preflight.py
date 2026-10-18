@@ -68,6 +68,7 @@ class CheckerParallelPreflightMixin:
                 entry = self.check_queue.get_next_entry_for_metadata_sources(
                     {"teamarr_preflight"}, respect_pause=True,
                     excluded_channel_ids={key[0] for key in runs},
+                    respect_queue_order=True,
                 )
             elif not self.check_queue.owns_in_progress(entry['channel_id'], entry['queue_entry_token']):
                 return True  # Clear/requeue invalidated this blocking dequeue.
