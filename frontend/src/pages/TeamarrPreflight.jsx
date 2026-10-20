@@ -484,9 +484,21 @@ export default function TeamarrPreflight() {
     due: 'due',
     no_check: 'without checks',
     past: 'past',
+    filtered: 'filtered',
     all: 'all',
   }
   const managedViewLabel = managedEventViewLabels[managedEventView] || 'managed'
+  const managedEventEmptyMessages = {
+    upcoming: 'No upcoming preflight items',
+    due: 'No preflight items are due',
+    no_check: 'No preflight items without checks',
+    past: 'No past preflight items',
+    filtered: 'No preflight items are excluded by the current filters',
+    all: 'No preflight items found',
+  }
+  const managedEventEmptyMessage = eventSearch.trim()
+    ? 'No preflight items match this search'
+    : (managedEventEmptyMessages[managedEventView] || 'No preflight items in this view')
   const managedEventSummary = eventSearch.trim()
     ? `${filteredUpcomingEvents.length} of ${viewFilteredUpcomingEvents.length} ${managedViewLabel} items (${allPreflightItemsCount} all)`
     : `${viewFilteredUpcomingEvents.length} ${managedViewLabel} items (${allPreflightItemsCount} all)`
@@ -1276,7 +1288,7 @@ export default function TeamarrPreflight() {
               />
             </div>
             <Select value={sourceView} onValueChange={setSourceView}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Preflight source">
                 <SelectValue placeholder="Source" />
               </SelectTrigger>
               <SelectContent>
@@ -1286,7 +1298,7 @@ export default function TeamarrPreflight() {
               </SelectContent>
             </Select>
             <Select value={managedEventView} onValueChange={setManagedEventView}>
-              <SelectTrigger>
+              <SelectTrigger aria-label="Preflight view">
                 <SelectValue placeholder="Event view" />
               </SelectTrigger>
               <SelectContent>
@@ -1294,6 +1306,7 @@ export default function TeamarrPreflight() {
                 <SelectItem value="due">Due</SelectItem>
                 <SelectItem value="no_check">No Check</SelectItem>
                 <SelectItem value="past">Past</SelectItem>
+                <SelectItem value="filtered">Filtered</SelectItem>
                 <SelectItem value="all">All</SelectItem>
               </SelectContent>
             </Select>
@@ -1311,7 +1324,7 @@ export default function TeamarrPreflight() {
               {preflightItems.length === 0 ? (
                 <p className="text-sm text-muted-foreground">No preflight items found</p>
               ) : filteredUpcomingEvents.length === 0 ? (
-                <p className="text-sm text-muted-foreground">No preflight items match this search</p>
+                <p className="text-sm text-muted-foreground">{managedEventEmptyMessage}</p>
               ) : (
                 <TooltipProvider delayDuration={200}>
                   <div className="space-y-3">
