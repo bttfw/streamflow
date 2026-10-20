@@ -624,7 +624,7 @@ export const operatorHelpDetailTopics = [
     ],
     smokeChecks: [
       'Teamarr Preflight status shows running and no last error.',
-      'Upcoming events show scheduled, due, past, or filtered state with clear latest-check context.',
+      'Upcoming and No Check hide items excluded by sport, league, or include filters. Teamarr Preflight -> Preflight Items -> Preflight view -> Filtered shows excluded events and teams; All includes them alongside other states.',
       'A post-start event can be classified due even if an earlier pre-start bucket already ran.',
       'A second post-start bucket can run at 4 minutes when the 2-minute bucket already ran.',
       'A 2-minute post-start check is skipped as past if post-start grace is only 1 minute, so keep grace larger than the post-start offsets.',
