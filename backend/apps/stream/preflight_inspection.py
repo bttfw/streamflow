@@ -74,6 +74,8 @@ def build_inspection(*, streams, analyzed, skipped, checked_ids, dead_ids,
                   or (probe or {}).get('quality_reason_detail') or (probe or {}).get('reason_detail'))
         if detail == 'none':
             detail = None
+        if detail == reason:
+            detail = None
         if skipped_item or not fresh:
             status = 'skipped'
             reason = (skipped_item or {}).get('reason')

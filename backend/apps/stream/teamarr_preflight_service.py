@@ -2403,7 +2403,7 @@ class TeamarrPreflightService:
                 "error": "Preflight check failed" if result.get("error") else None,
                 "reason": result.get("reason"),
                 "stats": self._public_check_stats(result.get("stats")),
-                    "inspection": result.get("preflight_inspection"),
+                "inspection": result.get("preflight_inspection"),
                 **quality_profile_details,
             },
         )
@@ -2444,7 +2444,7 @@ class TeamarrPreflightService:
                         "bucket": event.get("trigger_bucket"),
                         "reason": deferral_reason,
                         "stats": self._public_check_stats(result.get("stats")),
-                    "inspection": result.get("preflight_inspection"),
+                        "inspection": result.get("preflight_inspection"),
                         **quality_profile_details,
                     },
                 )
