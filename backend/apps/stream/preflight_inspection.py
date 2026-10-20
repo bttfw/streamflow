@@ -49,7 +49,8 @@ def public_inspection(value):
 
 
 def build_inspection(*, streams, analyzed, skipped, checked_ids, dead_ids,
-                     ordered_ids, profile, priority_mode, priority_ids, provider_names):
+                     ordered_ids, profile, priority_mode, priority_ids, provider_names,
+                     decision_reasons=None):
     """Capture probe facts before removed/limited streams disappear from the channel."""
     analysis = {item.get('stream_id'): item for item in analyzed}
     skipped_by_id = {item.get('id', item.get('stream_id')): item for item in skipped}
@@ -86,7 +87,7 @@ def build_inspection(*, streams, analyzed, skipped, checked_ids, dead_ids,
             status, reason = 'skipped', 'viewer_preempted'
         elif sid in dead_ids:
             status = 'dead'
-            reason = reason or 'offline'
+            reason = (decision_reasons or {}).get(sid) or reason or 'marked_dead'
         elif (probe or {}).get('measurement_incomplete'):
             status, reason = 'incomplete', (probe or {}).get('measurement_incomplete_reason') or 'incomplete_measurement'
         elif reason in ('blank', 'freeze', 'low_quality'):

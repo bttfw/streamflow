@@ -395,6 +395,8 @@ class CheckerConcurrentChannelMixin:
                     len(protected_active_stream_ids),
                 )
 
+            inspection_reasons = {}
+
             def inspection_result(analyzed, ordered_ids=None, dead_ids=()):
                 if run_mode != 'teamarr_preflight':
                     return None
@@ -409,6 +411,7 @@ class CheckerConcurrentChannelMixin:
                     profile=profile, priority_mode=priority_mode, priority_ids=priority_m3u_ids,
                     provider_names={item['id']: self._get_m3u_account_name(item['id'], udi)
                                     for item in streams[:500]},
+                    decision_reasons=inspection_reasons,
                 )
 
             # Identify which streams need analysis (new or unchecked)
@@ -861,6 +864,7 @@ class CheckerConcurrentChannelMixin:
                         else:
                             # Not allowed to revive, treat as still dead
                             dead_stream_ids.add(stream_id)
+                            inspection_reasons[stream_id] = 'revival_disabled'
                             logger.info(
                                 f"Stream is alive but revival is disabled by profile: "
                                 f"{stream_context(stream_id=stream_id, stream_url=stream_url, channel_id=channel_id)}"

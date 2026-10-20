@@ -60,6 +60,13 @@ def test_unsafe_unknown_fields_and_nonfinite_scores_are_not_exposed():
     assert data['streams'][0]['reason'].endswith('HTTP 503')
 
 
+def test_tracked_dead_state_does_not_invent_a_current_offline_measurement():
+    rows = {row['stream_id']: row for row in snapshot(dead_ids={1})['streams']}
+    assert rows[1]['status'] == 'dead' and rows[1]['reason'] == 'marked_dead'
+    rows = {row['stream_id']: row for row in snapshot(dead_ids={1}, decision_reasons={1: 'revival_disabled'})['streams']}
+    assert rows[1]['reason'] == 'revival_disabled'
+
+
 def test_large_results_are_explicitly_bounded():
     raw = {'streams': [dict(snapshot()['streams'][0], stream_id=sid, reason='a' * 10000)
                        for sid in range(800)]}

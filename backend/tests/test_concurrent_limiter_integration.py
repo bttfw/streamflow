@@ -118,8 +118,8 @@ def _configure_bitrate_runtime_service(service, tracker_updates):
     return tracker
 
 
-@pytest.mark.parametrize('monitoring', [False, True])
-def test_preflight_inspection_survives_stream_removal_and_limits(monkeypatch, monitoring):
+@pytest.mark.parametrize('monitoring,revival_disabled', [(False, False), (True, False), (False, True)])
+def test_preflight_inspection_survives_stream_removal_and_limits(monkeypatch, monitoring, revival_disabled):
     from apps.stream.stream_checker_service import StreamCheckerService
 
     streams = [{'id': sid, 'name': f'Feed {sid}', 'url': f'http://provider.invalid/{sid}',
@@ -128,11 +128,13 @@ def test_preflight_inspection_survives_stream_removal_and_limits(monkeypatch, mo
     profile = {'id': 'preflight', 'name': 'Preflight', 'stream_checking': {
         'enabled': True, 'stream_limit': 2, 'remove_dead_streams': True,
         'm3u_priority_mode': 'quality', 'grace_period': False,
+        'allow_revive': not revival_disabled,
     }}
     automation = Mock()
     automation.get_profile.return_value = profile
     service = StreamCheckerService()
     _configure_bitrate_runtime_service(service, {'channels': {}})
+    service.dead_streams_tracker.is_dead.side_effect = lambda url: revival_disabled and url.endswith('/1')
     monkeypatch.setattr('apps.stream.stream_checker_service.get_udi_manager', lambda: udi)
     monkeypatch.setattr('apps.stream.stream_checker_service.get_automation_config_manager', lambda: automation)
     monkeypatch.setattr('apps.stream.stream_checker_service.fetch_channel_streams', lambda cid: streams)
@@ -166,9 +168,15 @@ def test_preflight_inspection_survives_stream_removal_and_limits(monkeypatch, mo
         assert inspection['ordering_status'] == 'not_applied'
         service._checker_update_channel_streams.assert_not_called()
     else:
-        assert rows[2]['rank'] == 1 and rows[1]['rank'] == 2
+        assert rows[2]['rank'] == 1
         assert rows[3]['action'] == 'not_retained'
-        assert service._checker_update_channel_streams.call_args.args[1] == [2, 1]
+        if revival_disabled:
+            assert rows[1]['status'] == 'dead'
+            assert rows[1]['reason'] == 'revival_disabled'
+            assert rows[1]['action'] == 'not_retained'
+        else:
+            assert rows[1]['rank'] == 2
+        assert service._checker_update_channel_streams.call_args.args[1] == ([2] if revival_disabled else [2, 1])
 
 
 @pytest.mark.parametrize(
