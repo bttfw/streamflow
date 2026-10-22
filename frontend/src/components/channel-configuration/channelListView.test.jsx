@@ -1,9 +1,39 @@
 import { describe, expect, it } from 'vitest'
 import { renderToStaticMarkup } from 'react-dom/server'
-import { matchesProfileFilter, sortChannelList } from './channelListView.js'
+import { createMatchCountRunner, matchesProfileFilter, sortChannelList } from './channelListView.js'
 import { ChannelSortButton } from './ChannelListControls.jsx'
 
 const ids = channels => channels.map(channel => channel.id)
+
+describe('match-count scans during rapid view changes', () => {
+  it('keeps one scan in flight and skips superseded queued views', async () => {
+    const run = createMatchCountRunner()
+    const calls = []
+    let finish
+    let markStarted
+    const started = new Promise(resolve => { markStarted = resolve })
+    const first = run(() => {
+      calls.push('first')
+      markStarted()
+      return new Promise(resolve => { finish = resolve })
+    }, () => false)
+    await started
+    const skipped = run(() => { calls.push('skipped') }, () => true)
+    const latest = run(() => { calls.push('latest'); return 2 }, () => false)
+    expect(calls).toEqual(['first'])
+    finish(1)
+    expect(await first).toBe(1)
+    expect(await skipped).toBeNull()
+    expect(await latest).toBe(2)
+    expect(calls).toEqual(['first', 'latest'])
+  })
+
+  it('allows the current view to load after an earlier request fails', async () => {
+    const run = createMatchCountRunner()
+    await expect(run(() => Promise.reject(new Error('previous request failed')), () => false)).rejects.toThrow('previous request failed')
+    expect(await run(() => 5, () => false)).toBe(5)
+  })
+})
 
 describe('channel list sorting', () => {
   it('sorts numeric channel numbers including zero and decimals; missing values remain last', () => {

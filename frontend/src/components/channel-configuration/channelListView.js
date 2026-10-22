@@ -6,6 +6,16 @@ export const CHANNEL_SORT_OPTIONS = [
   { key: 'streams', label: 'Assigned streams' },
 ]
 
+// View changes can supersede a slow preview, but its server-side work continues.
+// Run one scan at a time and skip queued views that are no longer displayed.
+export function createMatchCountRunner() {
+  let pending = Promise.resolve()
+  return (request, isCancelled) => {
+    pending = pending.catch(() => {}).then(() => isCancelled() ? null : request())
+    return pending
+  }
+}
+
 export function matchesProfileFilter(activeProfile, profileFilter) {
   if (profileFilter === 'all') return true
   // An unresolved or failed lookup must never be presented as "No profile".

@@ -27,3 +27,6 @@ load every row's profile summary before filtering. Other API callers retain
 the original payload unless they opt in. Profile resolution uses a request-local
 configuration snapshot and a fixed number of database reads rather than one
 request per channel. Refreshing group configuration also refreshes these summaries.
+Match-count scans prepare and validate patterns once per channel. Rapid view
+changes keep one scan running and skip superseded queued views so sorting does
+not flood the API with concurrent full-inventory scans.

@@ -21,7 +21,7 @@ import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/comp
 import { REGEX_TABLE_GRID_COLS } from '@/components/channel-configuration/patternUtils.js'
 import { ChannelPagination } from '@/components/channel-configuration/ChannelPagination.jsx'
 import { ChannelListControls, ChannelSortButton } from '@/components/channel-configuration/ChannelListControls.jsx'
-import { matchesProfileFilter, sortChannelList } from '@/components/channel-configuration/channelListView.js'
+import { createMatchCountRunner, matchesProfileFilter, sortChannelList } from '@/components/channel-configuration/channelListView.js'
 import { RegexTableRow } from '@/components/channel-configuration/RegexTableRow.jsx'
 import { SortableChannelItem } from '@/components/channel-configuration/SortableChannelItem.jsx'
 import {
@@ -454,6 +454,7 @@ export default function ChannelConfiguration() {
   const [matchCountStates, setMatchCountStates] = useState({})
   const [matchCounts, setMatchCounts] = useState({})        // {channelId: matchCount}
   const [totalStreamCount, setTotalStreamCount] = useState(null)
+  const matchCountRunnerRef = useRef(createMatchCountRunner())
 
   // Multi-select state for bulk regex assignment
   const [selectedChannels, setSelectedChannels] = useState(new Set())
@@ -685,8 +686,11 @@ export default function ChannelConfiguration() {
       if (channelConfigs.length === 0) return
 
       try {
-        const response = await regexAPI.bulkMatchCounts({ channels: channelConfigs })
-        if (cancelled) return
+        const response = await matchCountRunnerRef.current(
+          () => regexAPI.bulkMatchCounts({ channels: channelConfigs }),
+          () => cancelled,
+        )
+        if (cancelled || !response) return
         const { counts, total_streams } = response.data
         setMatchCounts(prev => ({ ...prev, ...counts }))
         setMatchCountStates(previous => ({ ...previous, ...Object.fromEntries([...requestedIds].map(id => [id, counts?.[id] !== undefined ? 'ready' : 'unavailable'])) }))
