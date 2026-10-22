@@ -227,7 +227,8 @@ def create_group_stream_sessions_response(
                     errors.append(f"Failed to start session for channel {channel.get('name')} ({channel_id})")
 
             except Exception as exc:
-                errors.append(f"Error creating session for channel {channel.get('name')} ({channel_id}): {exc}")
+                logger.exception("Error creating session for channel %s", channel_id)
+                errors.append(f"Failed to create session for channel {channel_id}. Check the server log for details.")
 
         if created_sessions and not monitoring_service._running:
             monitoring_service.start()

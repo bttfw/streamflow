@@ -12,7 +12,8 @@ def playback_stability_config_response(*, method, payload=None, get_service):
         service = get_service()
         return jsonify(service.get_config() if method == 'GET' else service.update_config(payload)), 200
     except ValueError as exc:
-        return error_response(str(exc), status_code=400, code='invalid_playback_stability_config')
+        logger.warning('Invalid Playback Stability configuration: %s', exc)
+        return error_response('Invalid Playback Stability configuration. Check the supplied settings.', status_code=400, code='invalid_playback_stability_config')
     except Exception:
         logger.exception('Playback Stability settings unavailable')
         return error_response('Playback Stability settings unavailable', status_code=500, code='internal_error')
