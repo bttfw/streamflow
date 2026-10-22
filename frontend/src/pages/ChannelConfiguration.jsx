@@ -20,6 +20,8 @@ import { Switch } from '@/components/ui/switch.jsx'
 import { Tooltip, TooltipContent, TooltipTrigger, TooltipProvider } from '@/components/ui/tooltip.jsx'
 import { REGEX_TABLE_GRID_COLS } from '@/components/channel-configuration/patternUtils.js'
 import { ChannelPagination } from '@/components/channel-configuration/ChannelPagination.jsx'
+import { ChannelListControls, ChannelSortButton } from '@/components/channel-configuration/ChannelListControls.jsx'
+import { matchesProfileFilter, sortChannelList } from '@/components/channel-configuration/channelListView.js'
 import { RegexTableRow } from '@/components/channel-configuration/RegexTableRow.jsx'
 import { SortableChannelItem } from '@/components/channel-configuration/SortableChannelItem.jsx'
 import {
@@ -457,6 +459,8 @@ export default function ChannelConfiguration() {
   const [selectedChannels, setSelectedChannels] = useState(new Set())
   const [filterByGroup, setFilterByGroup] = useState('all')
   const [sortByGroup, setSortByGroup] = useState(false)
+  const [channelListSort, setChannelListSort] = useState({ key: 'custom', direction: 'asc' })
+  const [filterByProfile, setFilterByProfile] = useState('all')
   const [bulkDialogOpen, setBulkDialogOpen] = useState(false)
   const [bulkPeriodEditOpen, setBulkPeriodEditOpen] = useState(false)
   const [bulkPattern, setBulkPattern] = useState('')
@@ -527,8 +531,8 @@ export default function ChannelConfiguration() {
   // Update settings only mode (for playlist/priority changes without find & replace)
   const [updateOnlyMode, setUpdateOnlyMode] = useState(false)
 
-  // Active profile cache — keyed by channel ID; populated eagerly when paginatedChannels changes.
-  // Stays alive across page navigation so re-visiting a page doesn't re-fetch.
+  // Profile summaries for every channel are loaded before filtering or pagination.
+  // The per-channel endpoint is used only when refreshing an individual assignment.
   // Values: undefined = not yet fetched | null = in flight | { error } | { automation, epg_override }
   const channelLoadRequestRef = useRef(null)
   const groupsLoadRequestRef = useRef(null)
@@ -544,6 +548,7 @@ export default function ChannelConfiguration() {
     if (filterByGroup !== 'all' && channel.channel_group_id !== parseInt(filterByGroup)) {
       return false
     }
+    if (!matchesProfileFilter(activeProfiles[String(channel.id)], filterByProfile)) return false
 
     // Then apply search filter
     if (!searchQuery.trim()) return true
@@ -561,23 +566,18 @@ export default function ChannelConfiguration() {
       channelNumber.includes(query) ||
       channelId.includes(query) ||
       groupName.includes(query)
-  }), [orderedChannels, filterByGroup, searchQuery, groupsById])
+  }), [orderedChannels, filterByGroup, filterByProfile, activeProfiles, searchQuery, groupsById])
 
-  // Sort by group if enabled
-  const displayChannels = useMemo(() => sortByGroup
-    ? [...filteredChannels].sort((a, b) => {
-      const groupA = groupsById.get(String(a.channel_group_id))?.name || ''
-      const groupB = groupsById.get(String(b.channel_group_id))?.name || ''
-      return groupA.localeCompare(groupB) || (a.channel_number || 0) - (b.channel_number || 0)
-    })
-    : filteredChannels, [filteredChannels, sortByGroup, groupsById])
+  const displayChannels = useMemo(() => sortChannelList(filteredChannels, channelListSort, sortByGroup, groupsById),
+    [filteredChannels, channelListSort, sortByGroup, groupsById])
 
   // Filter ordered channels - simplify since group visibility is removed
   const visibleOrderedChannels = orderedChannels
 
   // Calculate pagination for Regex Configuration
   const totalPages = Math.ceil(displayChannels.length / itemsPerPage)
-  const startIndex = (currentPage - 1) * itemsPerPage
+  const visiblePage = Math.min(currentPage, Math.max(1, totalPages))
+  const startIndex = (visiblePage - 1) * itemsPerPage
   const endIndex = startIndex + itemsPerPage
   const paginatedChannels = useMemo(() => displayChannels.slice(startIndex, endIndex), [displayChannels, startIndex, endIndex])
 
@@ -601,7 +601,7 @@ export default function ChannelConfiguration() {
 
   useEffect(() => {
     if (loading) return
-    if (groups.length > 0) loadGroupsConfig()
+    if (groups.length > 0) loadGroupsConfig(false)
     else setLoadingGroupsConfig(false)
   }, [groups, loading])
 
@@ -744,7 +744,7 @@ export default function ChannelConfiguration() {
       setLoadingGroupsConfig(true)
 
       // Load all channels directly
-      const channelsResponse = await channelsAPI.getChannels()
+      const channelsResponse = await channelsAPI.getChannels({ include_active_profile: true })
       if (channelLoadRequestRef.current !== request) return
       const channelsToLoad = channelsResponse.data || []
 
@@ -807,10 +807,7 @@ export default function ChannelConfiguration() {
       setOriginalChannelOrder(orderedList)
       setHasOrderChanges(false)
 
-      // Clear active profile cache so fresh data is fetched for the new channel list
-      activeProfilesRef.current = {}
-      activeProfileRequestsRef.current = {}
-      setActiveProfiles({})
+      cacheChannelProfiles(channelsToLoad)
     } catch (err) {
       if (channelLoadRequestRef.current !== request) return
       console.error('Failed to load data:', err)
@@ -1074,17 +1071,24 @@ export default function ChannelConfiguration() {
 
   // --- Group Configuration Handlers ---
 
-  const loadGroupsConfig = async () => {
+  const cacheChannelProfiles = (channelData) => {
+    activeProfilesRef.current = Object.fromEntries(channelData.map(channel => [String(channel.id), channel.active_profile || { error: true }]))
+    activeProfileRequestsRef.current = {}
+    setActiveProfiles({ ...activeProfilesRef.current })
+  }
+
+  const loadGroupsConfig = async (refreshProfiles = true) => {
     if (groups.length === 0) return
     const request = Symbol('groups')
     groupsLoadRequestRef.current = request
     try {
       setLoadingGroupsConfig(true)
-      const summaryResponse = await automationAPI.getGroupConfigSummary()
+      const [summaryResponse, channelsResponse] = await Promise.all([
+        automationAPI.getGroupConfigSummary(),
+        refreshProfiles ? channelsAPI.getChannels({ include_active_profile: true }) : Promise.resolve(null),
+      ])
       if (groupsLoadRequestRef.current !== request) return
-      activeProfilesRef.current = {}
-      activeProfileRequestsRef.current = {}
-      setActiveProfiles({})
+      if (channelsResponse) cacheChannelProfiles(channelsResponse.data || [])
       setGroupsConfig(normalizeGroupConfigSummary(groups, summaryResponse.data || {}))
     } catch (err) {
       if (groupsLoadRequestRef.current !== request) return
@@ -2181,10 +2185,18 @@ export default function ChannelConfiguration() {
     setExpandedRowId(prevId => prevId === channelId ? null : channelId)
   }
 
-  // Reset to first page when search changes
+  // Sort and filter the whole result set, then paginate it.
   useEffect(() => {
     setCurrentPage(1)
-  }, [searchQuery, filterByGroup, sortByGroup])
+  }, [searchQuery, filterByGroup, filterByProfile, sortByGroup, channelListSort])
+
+  useEffect(() => {
+    setCurrentPage(page => Math.min(page, Math.max(1, totalPages)))
+  }, [totalPages])
+
+  const handleColumnSort = (key) => {
+    setChannelListSort(previous => ({ key, direction: previous.key === key && previous.direction === 'asc' ? 'desc' : 'asc' }))
+  }
 
 
   const clearSearch = () => {
@@ -2453,6 +2465,20 @@ export default function ChannelConfiguration() {
 
             </div>
 
+            <ChannelListControls
+              sort={channelListSort}
+              onSortChange={setChannelListSort}
+              profileFilter={filterByProfile}
+              onProfileFilterChange={setFilterByProfile}
+              profiles={profiles}
+              canReset={channelListSort.key !== 'custom' || filterByProfile !== 'all' || sortByGroup}
+              onReset={() => {
+                setChannelListSort({ key: 'custom', direction: 'asc' })
+                setFilterByProfile('all')
+                setSortByGroup(false)
+              }}
+            />
+
             <div className="space-y-3">
               {/* Group filter stays visible; bulk and maintenance actions stay available on demand. */}
               <div>
@@ -2683,7 +2709,7 @@ export default function ChannelConfiguration() {
                 <Card>
                   <CardContent className="p-8 text-center">
                     <p className="text-muted-foreground">
-                      {searchQuery ? `No channels found matching "${searchQuery}"` : 'No channels available'}
+                      {searchQuery || filterByGroup !== 'all' || filterByProfile !== 'all' ? 'No channels match the current filters' : 'No channels available'}
                     </p>
                     {searchQuery && (
                       <Button
@@ -2721,8 +2747,11 @@ export default function ChannelConfiguration() {
                               }}
                             />
                           </div>
-                          <div>Channel</div>
-                          <div>Streams</div>
+                          <div className="flex flex-wrap items-center gap-1">
+                            <ChannelSortButton field="channel_number" label="Channel #" sort={channelListSort} onSort={handleColumnSort} />
+                            <ChannelSortButton field="name" label="Name" sort={channelListSort} onSort={handleColumnSort} />
+                          </div>
+                          <div><ChannelSortButton field="streams" label="Streams" sort={channelListSort} onSort={handleColumnSort} /></div>
                           <div>Effective profile</div>
                           <div className="text-right">Actions</div>
                         </div>
@@ -2770,7 +2799,7 @@ export default function ChannelConfiguration() {
               )}
 
               {/* Pagination controls at bottom */}
-              <ChannelPagination page={currentPage} totalPages={totalPages} onPageChange={setCurrentPage} label="Channels pagination" />
+              <ChannelPagination page={visiblePage} totalPages={totalPages} onPageChange={setCurrentPage} label="Channels pagination" />
             </div>
           </TabsContent>
 
@@ -2905,7 +2934,7 @@ export default function ChannelConfiguration() {
                     </CardDescription>
                   </div>
                   <div className="flex items-center gap-2 shrink-0">
-                    <Button variant="outline" size="sm" aria-label="Refresh group configuration" onClick={loadGroupsConfig} disabled={loadingGroupsConfig} className="min-h-11">
+                    <Button variant="outline" size="sm" aria-label="Refresh group configuration" onClick={() => loadGroupsConfig()} disabled={loadingGroupsConfig} className="min-h-11">
                       {loadingGroupsConfig ? <Loader2 className="h-4 w-4 animate-spin" /> : <RotateCcw className="h-4 w-4" />}
                     </Button>
                   </div>
