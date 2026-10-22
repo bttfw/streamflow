@@ -296,4 +296,4 @@ def initialize_udi_response(*, get_dispatcharr_config: Callable[[], Any], get_ud
 
     except Exception as exc:
         logger.error(f"Error initializing UDI Manager: {exc}", exc_info=True)
-        return jsonify({"success": False, "error": str(exc)}), 500
+        return jsonify({"success": False, "error": "Failed to initialize UDI Manager. Please check the server log for details."}), 500

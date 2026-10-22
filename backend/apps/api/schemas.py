@@ -251,6 +251,30 @@ class BulkRegexPatternsSchema:
 
 
 @dataclass(frozen=True)
+class RegexMassEditSchema:
+    channel_ids: List[int]
+    find_pattern: str
+    replace_pattern: str
+    use_regex: bool
+
+    @classmethod
+    def from_payload(cls, payload: Any) -> "RegexMassEditSchema":
+        data = _ensure_dict(payload, message="No data provided")
+        raw_ids = _ensure_non_empty_list(data.get("channel_ids"), field_name="channel_ids")
+        if len(raw_ids) > 10000 or any(isinstance(value, bool) or not isinstance(value, (int, str)) for value in raw_ids):
+            raise ValidationError("channel_ids must contain at most 10000 integer IDs")
+        try:
+            channel_ids = [int(value) for value in raw_ids]
+        except (ValueError, TypeError):
+            raise ValidationError("channel_ids must be a list of integers") from None
+        for field in ('find_pattern', 'replace_pattern'):
+            if not isinstance(data.get(field), str) or len(data[field]) > 16384:
+                raise ValidationError(f"{field} must be a string of at most 16384 characters")
+        return cls(channel_ids, data['find_pattern'], data['replace_pattern'],
+                   _parse_bool(data.get('use_regex', False), field_name='use_regex'))
+
+
+@dataclass(frozen=True)
 class AutomationProfileCreateSchema:
     profile_data: Dict[str, Any]
 
