@@ -5,9 +5,130 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+## [2.8.0] - 2026-10-22
+
+This release promotes the complete tested `dev` branch to `main`, including the
+features and fixes below. Changes are relative to **2.7.1**. Stable users should
+update for the security fixes even if they do not use the new features.
+
+### Added
+
+- **Channel sorting and effective-profile filters ([#514](https://github.com/krinkuto11/streamflow/issues/514), [#516](https://github.com/krinkuto11/streamflow/pull/516)).** Sort the Channels list by channel number, natural channel name or assigned stream count in either direction. Filter by all profiles, a selected effective automation profile, or no configured profile, including inherited group assignments. Sorting and filtering apply before pagination, combine with existing search/group filters and preserve the saved Channel Order. Suggested by [@sm0keb0x](https://github.com/sm0keb0x).
+- **Expandable Teamarr Preflight stream details ([#509](https://github.com/krinkuto11/streamflow/issues/509), [#510](https://github.com/krinkuto11/streamflow/pull/510)).** Open a preflight item's stream table to inspect individual status, measured resolution, frame rate, codecs, bitrate, quality scores and available score details. The view stays collapsed until opened, and sensitive source URLs and credentials are excluded. Suggested by [@ajama-1984](https://github.com/ajama-1984).
+- **Concurrent Teamarr game checks ([#498](https://github.com/krinkuto11/streamflow/pull/498)).** The existing Concurrent Game Checks setting can run independent games in parallel, with separate progress and cancellation state and a shared probe budget. Provider/profile capacity limits, active-viewer protection and priority/FIFO queue ordering remain enforced. The default of one retains sequential operation. Contributed by [@meekju13391339](https://github.com/meekju13391339).
+- **Unraid DockerMan template and installation guide ([#494](https://github.com/krinkuto11/streamflow/pull/494)).** Add editable persistent Appdata, port, user/group and optional CPU/GPU settings, plus installation/update guidance. Community Applications listing remains subject to submission and review.
+
+### Fixed
+
+- **Cleaner Teamarr Preflight lists ([#511](https://github.com/krinkuto11/streamflow/issues/511), [#512](https://github.com/krinkuto11/streamflow/pull/512)).** Excluded sports and leagues disappear from normal preflight views. An explicit Filtered view remains available for diagnosis. Suggested by [@sm0keb0x](https://github.com/sm0keb0x).
+- **Monitoring regex composition ([#379](https://github.com/krinkuto11/streamflow/issues/379), [#468](https://github.com/krinkuto11/streamflow/pull/468)).** Preserve leading Python inline flags when combining multiple channel patterns for monitoring sessions. Reported by [@wredfearn](https://github.com/wredfearn).
+- **Dispatcharr login bursts and throttling ([#454](https://github.com/krinkuto11/streamflow/issues/454), [#469](https://github.com/krinkuto11/streamflow/pull/469)).** Serialize credential login attempts, reuse refreshed tokens and honor numeric/date Retry-After headers and server throttle hints instead of retrying too early. Reported by [@firestaerter3](https://github.com/firestaerter3).
+- **Responsive match-count scans.** Prepare and safety-check patterns once per channel. Rapid sorting/filter changes keep one scan in flight and skip superseded queued views, avoiding overlapping full-inventory scans.
+- **SQL configuration authority.** Preserve authoritative restored SQL settings instead of overwriting them with stale legacy JSON during startup migration.
+- **Heartbeat regression test.** Make the integration-test synchronization deterministic while retaining its lock, capacity, snapshot and redaction assertions.
+
+### Security
+
+- **Bounded regex mass edits ([#517](https://github.com/krinkuto11/streamflow/pull/517), [#518](https://github.com/krinkuto11/streamflow/pull/518)).** Preview and Apply prepare replacements in a disposable Python process with a two-second deadline, bounded input/output and a Linux memory cap. A timeout kills and reaps the process before any channel writes, while retaining normal Python regex syntax and backreferences.
+- **Private error diagnostics.** Keep internal exception details in server logs instead of API responses. Preserve public validation codes, missing-TVG-ID guidance and useful stream measurements while removing private URLs and nested diagnostics from successful single-channel responses.
+- **All 14 previously open CodeQL findings resolved.** Both Python and JavaScript analyses report zero findings on the tested source; no additional exclusions or alert dismissals were used.
+- **Dependency security updates ([#513](https://github.com/krinkuto11/streamflow/pull/513), [#515](https://github.com/krinkuto11/streamflow/pull/515)).** Update affected frontend and Python dependencies, including follow-redirects, Vite/Vitest, certifi and Pillow, with regenerated hash-locked Python requirements. Supported Pillow pixel access preserves media-analysis behavior.
+
+### Changed
+
+- **Frontend and build tooling.** Promote the reviewed React 19, React Router 7, Recharts 3 and related runtime/tooling updates together with current GitHub Actions. Automated dependency updates are credited to [@dependabot](https://github.com/apps/dependabot).
+- **Project overview and setup documentation** - Refresh README badges, stable/development image guidance, current features, setup locations and example-data screenshots. Document the required Compose `.env` file and persistent volume; mention Dispatcharr's Unraid store availability without installation instructions.
+- **Compatible React updates** - Group React, React DOM and their type packages together for future Dependabot version updates; retain separate review for other major updates.
+- **Dependency update policy** - Schedule grouped npm and GitHub Actions minor/patch updates against `dev`, keep major updates separate, and configure security-only updates against `main`. Document review requirements and the coordinated Python lockfile/media-image update process.
+
+### Upgrade notes and credits
+
+- Update the stable image `ghcr.io/krinkuto11/streamflow:latest`, or pin `ghcr.io/krinkuto11/streamflow:2.8.0`. Keep the existing persistent `/app/data` mapping and configured environment/device settings. Take a host-level backup of persistent data before updating.
+- Channel-list sorting changes only the current view. Use the separate Channel Order tab to change saved processing order. Concurrent game checks remain opt-in above the default of one.
+- Built-in backup/restore was added and removed during development and is not shipped in this release. Existing archive files and user settings are retained.
+- Feature suggestions and reports are credited above to their original authors. Implementation, integration and release maintenance are by [@bttfw](https://github.com/bttfw), with the concurrency contribution by [@meekju13391339](https://github.com/meekju13391339) and dependency proposals from Dependabot.
+- If a problem appears after updating, open a **new issue** with the version/image tag, reproduction steps and sanitized logs: [report a problem](https://github.com/krinkuto11/streamflow/issues/new/choose).
+
+## [2.7.1] - 2026-10-09
+
+### Fixed
+
+- **First-time setup (#495)** - Start required EPG refresh, scheduled-event and UDI refresh workers after live Dispatcharr initialization succeeds. A completed first setup can reach full readiness without restarting the container.
+- **Setup initialization retry** - Apply the same worker startup hook when the wizard retries initialization after a failed connection; failed initialization does not start the workers.
+- **Concurrent worker startup** - Serialize worker alive checks and thread creation, keeping one thread per required worker when setup completion, connection saves or direct start requests overlap.
+
+Existing user settings, optional automation defaults, API response formats and startup with saved configuration retain their existing behavior. Detailed changes and validation are recorded in [the first-setup development changelog](docs/dev-first-setup-changelog-20261009.md).
+
+## [2.7.0] - 2026-10-08
+
+This release promotes the tested development branch to `main`. Changes below are relative to **2.6.0.1** and include PRs [#460](https://github.com/krinkuto11/streamflow/pull/460), [#461](https://github.com/krinkuto11/streamflow/pull/461), [#462](https://github.com/krinkuto11/streamflow/pull/462), [#463](https://github.com/krinkuto11/streamflow/pull/463), [#464](https://github.com/krinkuto11/streamflow/pull/464), and the OpenStream monitoring updates.
+
+## Added
+
+- **Optional playback stability history.** StreamFlow can observe existing Dispatcharr viewer sessions and persist observed delivery time, stalls and source switches in SQLite without opening another provider connection. History survives restarts, has configurable retention, and ties evidence to a stream ID and source-URL hash. Viewer identities, IP addresses, credentials and source URLs are not stored in this history.
+- **Optional stability deductions in quality scoring.** Enable collection at **Settings → Monitoring → Playback Stability → Record Playback Stability**, then opt individual profiles in at **Profile editor → Stream Checking → Stream Quality Scoring → Use Playback Stability**. Both options default to **off**. A source needs at least ten observed minutes and 60 valid samples before its history can affect scoring. Sources without enough evidence retain their existing score; stable sources receive no deduction. The default optional weight is 15%. Ordinary and Teamarr channels follow the same rules, with independently configured profiles.
+- **Playback history controls.** Polling can be set to 5–60 seconds (default 10), retention to 1–30 days (default 14). A sanitized history table shows observed time, stall time, failovers and a score or `Not enough data`.
+- **Matrix appearance.** A black/charcoal theme with green accents joins Light, Dark and Auto in the appearance menu. Selection persists across reloads, while warning/error colors retain their meaning.
+- **Channels Restored quick metric.** Dashboard now displays restored channels beside checked channels, good streams, dead streams and hidden channels, with responsive wrapping.
+- **OpenStream monitoring sessions.** Monitor supported AceStream sources through an OpenStream server's API and swarm telemetry. The session UI exposes resolution, frame rate, delivery health and latency. Settings → Connection → OpenStream provides API-key configuration and connection testing; environment and secret-file configuration are also supported.
+- **Monitoring interval controls.** Session creation accepts bounded evaluation and enforcement intervals, both defaulting to 1,000 ms. The enforcement tick does not force an assignment write on every tick.
+
+## Changed
+
+- **Responsive workspace.** Dashboard, Channels and Monitoring use more compact layouts, explicit loading/error states, effective profile information, and accessible mobile navigation with focus handling and Escape support. Monitoring details and charts load when opened.
+- **Faster startup path.** Configured instances use application readiness for startup instead of rerunning the setup connection diagnostic on every page load. Initial setup remains available when needed.
+- **Safer settings saves.** Saves apply to the relevant settings section. Failed section loads expose retry controls and cannot overwrite unrelated settings.
+- **Preflight checkpoint handling.** Teamarr Preflight catches up to the newest crossed checkpoint after a slow scan, retries temporarily missing streams within bounded windows, and rechecks queued event/channel identity, policy and expiry before media work. Transient source outages release the attempt marker for a later retry.
+- **Separate preflight catalog work.** Dropdown/catalog refresh runs independently from due-check admission. Subscription/sport/league metadata uses a short cache with configuration invalidation; event readiness still uses current source information.
+- **Less repeated API and database work.** Reuse thread-owned HTTP connections, coalesce simultaneous channel reads, reuse provider/configuration snapshots within a run, batch dead-stream lookups, and avoid unnecessary monitoring writes and redundant channel-refresh reads.
+- **Lighter UI updates.** Dashboard, Stream Checker and Preflight serialize polling, pause it on hidden tabs, and refresh on return. ETags reuse unchanged status responses. Large stream tables render their visible rows with overscan; countdowns update independently. Narrow screens keep readable columns through horizontal scrolling.
+- **OpenStream shared polling and leases.** Sources on the same server share a keep-alive poller. Supporting servers use renewable leases, so stopping a monitoring session releases its ownership without stopping another viewer or session. Older servers retain their previous fallback behavior.
+- **OpenStream ranking and recovery.** Rank sources by received delivery over a five-minute window. Dead sources rank last immediately but require 300 continuous dead seconds before quarantine. API refusals and handled polling failures appear as status rather than causing continuous monitor restarts. FFmpeg-specific speed quarantine does not apply to OpenStream telemetry.
+- **Pinned media tools.** Production and development containers use a reviewed LinuxServer FFmpeg/ffprobe 8.1.2 build, with Python 3.11 in a separate virtual environment. CPU analysis remains the default; configured NVIDIA runtime/device options remain usable.
+- **Stream Checker decomposition.** Queue, statistics, ownership, inventory, classification, status, and sequential/concurrent execution now live in focused modules behind the existing service facade. Shared state, lock ordering and public behavior are preserved. Bounded timing summaries separate queue/provider waits, analysis, API reads and writes.
+
+## Fixed
+
+- Enforce configured channel stream limits after protecting genuine cache misses and active-viewer streams. Streams intentionally removed by ranking are no longer appended again as false cache misses.
+- Report matching, inventory, validation, missing-result and rejected Dispatcharr write failures as failures. Single-channel checks stop before later stages when an earlier stage fails, and discover only against that channel's rules.
+- Serialize StreamFlow assignment writers per channel, check current assignments before writing, and confirm ordered assignments after PATCH. Partial writes remain explicit; external writers can still race because Dispatcharr does not offer conditional assignment PATCHes.
+- Return the expected counts after successful manual Discover Streams instead of treating a structured success result as an error.
+- Exclude quarantined sources from monitoring fallback. Confirm manual revival and automatic hidden-channel recovery, clear dead markers before revival, and preserve manual channel hides.
+- Detect stream name, URL, group, provider and assignment changes even when IDs remain unchanged. Reject incomplete fresh metadata before probing or publishing stale cache/index information.
+- Preserve positive measured bitrate across trailing zero progress. Respect the existing Bitrate Recheck switch for completed no-bitrate probes, drain interrupted FFmpeg output, and handle truncated visual evidence explicitly.
+- Reconcile ambiguous channel creation responses through read-only confirmation instead of automatically replaying uncertain non-idempotent requests.
+- Keep the legacy sequential retry's original quality weights when no playback evidence exists. Observation gaps, normal retuning/endings, API outages and byte-counter resets do not create false playback failures.
+- Bound legacy in-memory changelog growth and idle telemetry/history reads. Preserve stored SQL history and existing viewer protection.
+- Preserve Matrix active-navigation colors after the Tailwind migration, including desktop/mobile dialogs and theme switching.
+
+## Security
+
+- Upgrade Tailwind CSS **3.4.18 → 4.3.3**, add its official PostCSS integration, update React Router DOM **6.30.4 → 7.18.4** and tailwind-merge **2.6.0 → 3.7.0**, and remove the vulnerable legacy build dependency chain. Update source-map-js to **1.2.2**.
+- Update hash-locked production/test dependencies to **Werkzeug 3.1.9** and **urllib3 2.8.0**. Frontend and production Python dependency audits pass without suppressions or disabled gates on the tested development revision.
+- Bound logo downloads by image size, total cache budget, timeout and redirects; validate response content and destinations. Cached image responses set security headers, and writes are atomic.
+- Return generic logo/discovery errors and validated numeric discovery results instead of exposing internal exception details or nested provider data to clients.
+
+## Upgrade notes and limits
+
+- Container configuration, persistent data paths and existing automation profiles remain supported. Playback collection and profile scoring require explicit opt-in; upgrading does not enable them globally.
+- **Browser requirements:** Tailwind 4 requires Safari **16.4+**, Chrome **111+**, or Firefox **128+**. Existing custom fonts, semantic colors and Light/Dark layouts are preserved.
+- Passive stability observes delivery through Dispatcharr. It cannot detect a decoder freeze while bytes continue arriving, identify every interruption between polls, or prove the cause of a source switch.
+- Reduced duplicate work and UI requests do not establish a measured whole-run speedup. Provider limits and configured media-analysis durations still determine a substantial part of runtime.
+- No Teamarr or Dispatcharr code modifications are required. Unraid deployments retain the normal GUI-editable DockerMan template workflow.
+
+## Validation and references
+
+- Current merged `dev` revision `31b3d5be7202c7ba86b54d9bb429e8a77006e537` passed the backend stable suite, integration contracts, frontend audit/tests/build and both CodeQL language jobs. Its amd64/arm64 container build also passed.
+- Runtime source matches the previously validated combined image. Live Unraid validation covered readiness, persisted settings, passive viewer-history collection, navigation, desktop/mobile dialogs and Light/Dark/Matrix appearance. A scheduled 222-channel quality run and normal Teamarr Preflight runs completed during the preceding validation.
+- Technical records: [Reliability/UI](https://github.com/krinkuto11/streamflow/blob/main/docs/pr460-changelog.md), [Preflight and checker split](https://github.com/krinkuto11/streamflow/blob/main/docs/dev-efficiency-changelog-20261002.md), [Playback stability](https://github.com/krinkuto11/streamflow/blob/main/docs/dev-playback-stability-changelog-20261007.md), [Dependency migration](https://github.com/krinkuto11/streamflow/blob/main/docs/dev-frontend-security-changelog-20261007.md), [Checker architecture](https://github.com/krinkuto11/streamflow/blob/main/docs/stream-checker-architecture.md), and [OpenStream monitoring](https://github.com/krinkuto11/streamflow/blob/main/docs/stream-monitoring.md).
+
+**Full comparison:** https://github.com/krinkuto11/streamflow/compare/2.6.0.1...2.7.0
+
 ## [2.5.6.1] - 2026-05-15
 
-## [Unreleased]
+## Development log retained from previous branches
 
 ### Added
 - **Teamarr preflight stream inspection (#509)** - Expand an item's Stream details to inspect each provider's status, failure reason, measured quality, score, and saved channel rank. Results retain removed and limited candidates, distinguish skipped and previous measurements, and load without starting another check.
