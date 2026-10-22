@@ -132,6 +132,7 @@ export const channelsAPI = {
    * @param {string}  [params.sort_dir]  - Sort direction: 'asc' (default) or 'desc'.
    * @param {number}  [params.page]      - Page number (1-based). Omit for full list.
    * @param {number}  [params.per_page]  - Items per page (default 50, max 500).
+   * @param {boolean} [params.include_active_profile] - Include effective automation/EPG profile summaries for list filtering.
    */
   getChannels: (params = {}) => api.get('/channels', { params }),
   getGroups: () => api.get('/channels/groups'),
