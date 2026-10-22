@@ -939,7 +939,9 @@ class AutomationConfigManager:
         return True
 
     def get_channel_periods(self, channel_id: int) -> Dict[str, str]:
-        assignments = self._get_config_dict("channel_period_assignments", {})
+        snapshot = self._active_run_snapshot()
+        assignments = (snapshot['channel_period_assignments'] if snapshot is not None
+                       else self._get_config_dict("channel_period_assignments", {}))
         channel_assignments = assignments.get(str(channel_id), {})
         if not isinstance(channel_assignments, dict):
             return {}

@@ -54,6 +54,7 @@ def get_channels_response(
                 sort_dir=sort_dir,
                 page=page,
                 per_page=per_page,
+                include_active_profile=request_args.get("include_active_profile", "").lower() == "true",
             )
         )
 

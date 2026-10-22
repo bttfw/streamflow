@@ -14,6 +14,7 @@ import os
 import re
 import sys
 import threading
+import uuid
 import time
 from concurrent.futures import FIRST_COMPLETED, Future, ThreadPoolExecutor, wait
 from copy import deepcopy
@@ -30,6 +31,7 @@ from apps.udi import get_udi_manager
 from apps.core import http_transport
 from apps.core.metadata_cache import MetadataCache
 from apps.core.operation_timing import OperationTimings
+from apps.stream.preflight_inspection import public_inspection
 from apps.stream.preflight_policy import latest_due_bucket, preflight_deadline, parse_time
 
 logger = setup_logging(__name__)
@@ -404,6 +406,7 @@ class TeamarrPreflightService:
         self._default_profile_error: Optional[str] = None
         self._ensure_default_profile()
         self._events: deque[Dict[str, Any]] = deque(maxlen=MAX_EVENTS)
+        self._inspections: Dict[str, Dict[str, Any]] = {}
         self._upcoming: List[Dict[str, Any]] = []
         self._upcoming_teams: List[Dict[str, Any]] = []
         self._preflight_items: List[Dict[str, Any]] = []
@@ -676,6 +679,10 @@ class TeamarrPreflightService:
                 "teamarr_connector": self._teamarr_connector_status(),
                 "config": public_config(self._config, self._default_profile_metadata()),
             }
+
+    def get_inspection(self, inspection_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            return deepcopy(self._inspections.get(inspection_id))
 
     def _teamarr_queue_snapshot(self) -> Dict[str, List[Dict[str, Any]]]:
         snapshot: Dict[str, List[Dict[str, Any]]] = {
@@ -2112,6 +2119,8 @@ class TeamarrPreflightService:
         if config.get("queue_during_active_checks", True) and self._automation_active():
             self._set_stream_checker_event_gate(True, gate_name="teamarr_preflight_automation")
             return self._queue_check(event, config, autostart_worker=False)
+        if int(config["max_concurrent_checks"]) > 1:
+            return self._queue_check(event, config, autostart_worker=True)
         if self._stream_checker_active():
             return self._queue_check(event, config, autostart_worker=False)
 
@@ -2379,6 +2388,7 @@ class TeamarrPreflightService:
                     "bucket": metadata.get("trigger_bucket"),
                     "reason": deferral_reason,
                     "stats": self._public_check_stats(result.get("stats")),
+                    "inspection": result.get("preflight_inspection"),
                     **quality_profile_details,
                 },
             )
@@ -2393,6 +2403,7 @@ class TeamarrPreflightService:
                 "error": "Preflight check failed" if result.get("error") else None,
                 "reason": result.get("reason"),
                 "stats": self._public_check_stats(result.get("stats")),
+                "inspection": result.get("preflight_inspection"),
                 **quality_profile_details,
             },
         )
@@ -2433,6 +2444,7 @@ class TeamarrPreflightService:
                         "bucket": event.get("trigger_bucket"),
                         "reason": deferral_reason,
                         "stats": self._public_check_stats(result.get("stats")),
+                        "inspection": result.get("preflight_inspection"),
                         **quality_profile_details,
                     },
                 )
@@ -2448,6 +2460,7 @@ class TeamarrPreflightService:
                     "error": "Preflight check failed" if result.get("error") else None,
                     "reason": result.get("reason"),
                     "stats": self._public_check_stats(result.get("stats")),
+                    "inspection": result.get("preflight_inspection"),
                     **quality_profile_details,
                 },
             )
@@ -2502,6 +2515,13 @@ class TeamarrPreflightService:
             return None
         if self._automation_active():
             return "automation_active"
+        if int(config.get("max_concurrent_checks", 1)) > 1:
+            try:
+                checker = self.stream_checker_provider()
+                if checker.can_queue_parallel_preflight() is True:
+                    return None
+            except Exception:
+                pass  # Unknown ownership must use the existing conservative gate.
         if self._stream_checker_active():
             return "stream_checker_active"
         return None
@@ -2713,7 +2733,14 @@ class TeamarrPreflightService:
             "may_start_full_run": False,
             "details": details,
         }
+        inspection = public_inspection(details.pop("inspection", None))
         with self._lock:
+            if inspection is not None:
+                inspection_id = uuid.uuid4().hex
+                self._inspections[inspection_id] = inspection
+                details["inspection_id"] = inspection_id
+                while len(self._inspections) > MAX_EVENTS:
+                    self._inspections.pop(next(iter(self._inspections)))
             self._events.appendleft(payload)
         logger.info(
             "Teamarr preflight event=%s channel_id=%s identity=%s",
