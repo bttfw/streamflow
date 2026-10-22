@@ -118,6 +118,67 @@ def _configure_bitrate_runtime_service(service, tracker_updates):
     return tracker
 
 
+@pytest.mark.parametrize('monitoring,revival_disabled', [(False, False), (True, False), (False, True)])
+def test_preflight_inspection_survives_stream_removal_and_limits(monkeypatch, monitoring, revival_disabled):
+    from apps.stream.stream_checker_service import StreamCheckerService
+
+    streams = [{'id': sid, 'name': f'Feed {sid}', 'url': f'http://provider.invalid/{sid}',
+                'm3u_account': 1, 'stream_stats': {}} for sid in (1, 2, 3)]
+    udi = _make_bitrate_runtime_udi(77, streams)
+    profile = {'id': 'preflight', 'name': 'Preflight', 'stream_checking': {
+        'enabled': True, 'stream_limit': 2, 'remove_dead_streams': True,
+        'm3u_priority_mode': 'quality', 'grace_period': False,
+        'allow_revive': not revival_disabled,
+    }}
+    automation = Mock()
+    automation.get_profile.return_value = profile
+    service = StreamCheckerService()
+    _configure_bitrate_runtime_service(service, {'channels': {}})
+    service.dead_streams_tracker.is_dead.side_effect = lambda url: revival_disabled and url.endswith('/1')
+    monkeypatch.setattr('apps.stream.stream_checker_service.get_udi_manager', lambda: udi)
+    monkeypatch.setattr('apps.stream.stream_checker_service.get_automation_config_manager', lambda: automation)
+    monkeypatch.setattr('apps.stream.stream_checker_service.fetch_channel_streams', lambda cid: streams)
+    monkeypatch.setattr('apps.stream.stream_checker_service._get_base_url', lambda: 'http://dispatcharr.invalid')
+    service._require_quality_check_connectivity = Mock(return_value=None)
+    service._check_channel_limits = Mock(return_value=None)
+    monkeypatch.setattr('apps.stream.stream_checker_service.batch_update_stream_stats', Mock(return_value=(3, 0)))
+    monkeypatch.setattr('apps.stream.stream_checker_service.update_channel_streams', Mock(return_value=True))
+    monkeypatch.setattr('apps.stream.stream_checker_service.get_session_manager', lambda: Mock(
+        is_channel_in_active_session=Mock(return_value=monitoring)))
+    service._get_active_viewer_protected_stream_ids = Mock(return_value=set())
+    service._is_stream_dead = lambda item, *a, **kw: (item['stream_id'] == 3, 'timeout' if item['stream_id'] == 3 else '')
+    service._calculate_stream_score = lambda item, *a, **kw: {1: .5, 2: .9, 3: 0}[item['stream_id']]
+    service._run_deferred_bitrate_rechecks = Mock()
+    scheduler = Mock()
+    scheduler.check_streams_with_limits.return_value = [
+        {'stream_id': item['id'], 'stream_name': item['name'], 'stream_url': item['url'],
+         'resolution': '1920x1080', 'fps': 50, 'bitrate_kbps': 5000,
+         'video_codec': 'h264', 'audio_codec': 'aac'} for item in streams
+    ]
+    monkeypatch.setattr('apps.stream.concurrent_stream_limiter.get_smart_scheduler', lambda **kw: scheduler)
+    result = service._check_channel_concurrent(77, forced_profile_id='preflight',
+                                                run_mode='teamarr_preflight', force_check_override=True)
+    assert not result.get('error'), result
+    inspection = result['preflight_inspection']
+    rows = {row['stream_id']: row for row in inspection['streams']}
+    assert set(rows) == {1, 2, 3}
+    assert rows[3]['status'] == 'dead'
+    assert rows[3]['reason'].startswith('timeout')
+    if monitoring:
+        assert inspection['ordering_status'] == 'not_applied'
+        service._checker_update_channel_streams.assert_not_called()
+    else:
+        assert rows[2]['rank'] == 1
+        assert rows[3]['action'] == 'not_retained'
+        if revival_disabled:
+            assert rows[1]['status'] == 'dead'
+            assert rows[1]['reason'] == 'revival_disabled'
+            assert rows[1]['action'] == 'not_retained'
+        else:
+            assert rows[1]['rank'] == 2
+        assert service._checker_update_channel_streams.call_args.args[1] == ([2] if revival_disabled else [2, 1])
+
+
 @pytest.mark.parametrize(
     ('case_name', 'inventory'),
     (
@@ -733,7 +794,8 @@ def test_viewer_preemption_clears_released_profile_before_sibling_retry():
         assert credential_fragment not in serialized_progress
 
 
-def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit():
+@pytest.mark.parametrize('leading_pending_heartbeat', [False, True])
+def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit(leading_pending_heartbeat):
     import apps.stream.concurrent_stream_limiter as limiter_module
     import apps.stream.stream_checker_service as service_module
     from apps.stream.concurrent_stream_limiter import get_account_limiter
@@ -783,10 +845,12 @@ def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit()
     transition_blocked = threading.Event()
     release_transition = threading.Event()
     heartbeat_seen = threading.Event()
+    pending_heartbeat_seen = threading.Event()
     reserve_boundary_open = threading.Event()
     release_boundary_open = threading.Event()
     heartbeat_attempted_during_reserve = threading.Event()
     heartbeat_attempted_during_release = threading.Event()
+    heartbeat_release_gate_reached = threading.Event()
     heartbeat_boundary_locks = {'reserve': None, 'release': None}
     original_reserved_profile = limiter_module.ReservedProfile
     original_rlock = threading.RLock
@@ -829,7 +893,22 @@ def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit()
                 self.depth -= 1
                 if self.depth == 0:
                     self.owner_thread_id = None
-            return self._lock.release()
+                outermost = self.depth == 0
+            result = self._lock.release()
+            if (
+                outermost
+                and threading.current_thread().name == 'stream-checker-heartbeat'
+                and self is heartbeat_boundary_locks['reserve']
+                and heartbeat_seen.is_set()
+                and not heartbeat_release_gate_reached.is_set()
+            ):
+                # The checking snapshot is fully published and its lock is
+                # released. Park here until the worker opens the release
+                # boundary, so our next acquisition observes that boundary
+                # instead of already blocking before it opens.
+                heartbeat_release_gate_reached.set()
+                assert release_boundary_open.wait(timeout=2)
+            return result
 
         def held_by_current_thread(self):
             with self._owner_lock:
@@ -867,7 +946,15 @@ def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit()
 
     def record_progress(**kwargs):
         progress_updates.append(deepcopy(kwargs))
-        if kwargs.get('step_detail') == 'Checking streams...':
+        if (
+            kwargs.get('step_detail') == 'Checking streams...'
+            and (kwargs.get('streams_detail') or [{}])[0].get('status') == 'pending'
+        ):
+            pending_heartbeat_seen.set()
+        if (
+            kwargs.get('step_detail') == 'Checking streams...'
+            and (kwargs.get('streams_detail') or [{}])[0].get('status') == 'checking'
+        ):
             heartbeat_seen.set()
 
     def analyze_after_heartbeat(**kwargs):
@@ -900,6 +987,13 @@ def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit()
     )
     release_thread.start()
 
+    original_check_streams = limiter_module.SmartStreamScheduler.check_streams_with_limits
+
+    def check_after_optional_pending_heartbeat(scheduler, *args, **kwargs):
+        if leading_pending_heartbeat:
+            assert pending_heartbeat_seen.wait(timeout=2)
+        return original_check_streams(scheduler, *args, **kwargs)
+
     with (
         patch('apps.stream.stream_checker_service.get_udi_manager', return_value=udi),
         patch(
@@ -925,6 +1019,11 @@ def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit()
         ),
         patch.object(limiter_module, 'ReservedProfile', BlockingReservedProfile),
         patch.object(service_module.threading, 'RLock', ObservableRLock),
+        patch.object(
+            limiter_module.SmartStreamScheduler,
+            'check_streams_with_limits',
+            check_after_optional_pending_heartbeat,
+        ),
         patch.object(
             service_module,
             '_STREAM_STATUS_HEARTBEAT_INTERVAL_SECONDS',
@@ -995,12 +1094,16 @@ def test_heartbeat_snapshot_is_atomic_and_reports_effective_shared_route_limit()
     assert heartbeat_seen.is_set()
     assert heartbeat_attempted_during_reserve.is_set()
     assert heartbeat_attempted_during_release.is_set()
+    assert heartbeat_release_gate_reached.is_set()
+    if leading_pending_heartbeat:
+        assert pending_heartbeat_seen.is_set()
     assert heartbeat_boundary_locks['reserve'] is heartbeat_boundary_locks['release']
 
     heartbeat_updates = [
         update
         for update in progress_updates
         if update.get('step_detail') == 'Checking streams...'
+        and (update.get('streams_detail') or [{}])[0].get('status') == 'checking'
     ]
     assert heartbeat_updates
     reserved_fields = {
