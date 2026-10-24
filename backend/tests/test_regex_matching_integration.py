@@ -50,6 +50,7 @@ class TestRegexMatchingIntegration(unittest.TestCase):
         scheduling_service.AUTO_CREATE_RULES_FILE = scheduling_service.CONFIG_DIR / 'auto_create_rules.json'
         
         self.service = SchedulingService()
+        self.service._get_base_url = Mock(return_value='http://test.local')
         
         # Mock UDI manager
         self.mock_udi_patcher = patch('scheduling_service.get_udi_manager')
