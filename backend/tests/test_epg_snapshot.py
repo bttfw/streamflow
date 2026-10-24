@@ -94,3 +94,15 @@ def test_search_channel_mappings_are_available_for_epg_identity():
     ids = service._program_epg_identifiers({"channels": [{"id": 17, "uuid": "channel-17"}]})
     assert "dispatcharr_channel:17" in ids
     assert "dispatcharr_channel_uuid:channel-17" in ids
+
+
+def test_guide_timestamp_rounding_does_not_duplicate_search_programme():
+    service = SchedulingService()
+    rows, seen = [], set()
+    program = {"id": 521, "tvg_id": "test", "title": "Live event",
+               "start_time": "2026-10-24T12:00:00.123456Z", "end_time": "2026-10-24T13:00:00.123456Z"}
+    rounded = dict(program, start_time="2026-10-24T12:00:00.123Z", end_time="2026-10-24T13:00:00.123Z")
+    service._merge_program_sources(rows, seen, [program], source="programs")
+    service._merge_program_sources(rows, seen, [rounded], source="grid")
+    assert len(rows) == 1
+    assert rows[0]["start_time"] == program["start_time"]

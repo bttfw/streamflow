@@ -159,7 +159,7 @@ class TestRegexMatchingIntegration(unittest.TestCase):
                 'end_time': (now + timedelta(hours=2)).isoformat(),
                 'tvg_id': 'test-channel-1',
             }],
-            'next': 'http://test.local/api/epg/programs/?page=2',
+            'next': 'http://test.local/api/epg/programs/search/?page=2',
         }
         second_page = {
             'results': [

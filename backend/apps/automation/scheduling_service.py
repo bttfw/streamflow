@@ -2377,14 +2377,24 @@ class SchedulingService:
         for program in items:
             if not isinstance(program, dict):
                 continue
-            dedup_key = (
-                program.get('id'),
-                program.get('tvg_id'),
-                program.get('channel_uuid') or program.get('channelUuid'),
-                self._program_start_time(program),
-                self._program_end_time(program),
-                self._program_event_title(program),
-            )
+            # Search returns microseconds while the guide rounds the same row
+            # to milliseconds. A Dispatcharr programme id is the authority;
+            # differing timestamp serialization must not create a second event.
+            if program.get('id') is not None:
+                dedup_key = ('program_id', str(program['id']))
+            else:
+                def time_key(value):
+                    try:
+                        return _parse_dt(value).astimezone(timezone.utc).isoformat(timespec='milliseconds')
+                    except (TypeError, ValueError, AttributeError):
+                        return value
+                dedup_key = (
+                    program.get('tvg_id'),
+                    program.get('channel_uuid') or program.get('channelUuid'),
+                    time_key(self._program_start_time(program)),
+                    time_key(self._program_end_time(program)),
+                    self._program_event_title(program),
+                )
             if dedup_key in seen_programs:
                 continue
             seen_programs.add(dedup_key)
