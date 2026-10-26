@@ -230,6 +230,15 @@ export const operatorHelpDetailTopics = [
         risk: 'Disabling it skips stream analysis and leaves quality state unchanged.',
       },
       {
+        name: 'Provider Stream Cap',
+        controlType: 'Visible UI setting',
+        defaultValue: '0 (disabled)',
+        location: 'Settings -> Profiles tab -> Edit profile -> Stream Checking -> Provider Stream Cap',
+        effect: 'Prefers up to the configured number of eligible streams per M3U provider for each channel, then fills remaining channel slots with the best remaining eligible streams even when this exceeds the provider cap. Existing ranking and active-viewer protection still apply.',
+        useWhen: 'Use with a positive Stream Limit per Channel to spread backup streams across providers.',
+        risk: 'This is a soft cap, not a provider connection limit or a guaranteed equal split. With an unlimited channel stream limit, all eligible streams are kept.',
+      },
+      {
         name: 'Channel Visibility',
         controlType: 'Visible UI setting',
         defaultValue: 'Profile disabled',
