@@ -51,6 +51,13 @@ def test_unknown_sources_can_fill_but_do_not_invent_provider_diversity():
     assert result == [1, 2, 3, 5]
 
 
+def test_single_provider_backfill_still_truncates_to_the_best_eight():
+    assert StreamCheckerService._limit_write_back_stream_ids(
+        list(range(1, 11)), 8, set(), provider_stream_limit=3,
+        stream_provider_ids={sid: 10 for sid in range(1, 11)},
+    ) == list(range(1, 9))
+
+
 @pytest.mark.parametrize('cap', [None, 'invalid', -2, float('inf')])
 def test_invalid_provider_caps_keep_existing_global_limit_behavior(cap):
     assert StreamCheckerService._limit_write_back_stream_ids(
