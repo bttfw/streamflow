@@ -1,0 +1,7 @@
+# Temporary fork-only validation image for frontend-only PRs 553 and 554.
+# Backend source, locked Python dependencies and runtime are unchanged at bae61632.
+FROM ghcr.io/krinkuto11/streamflow@sha256:ec60f7d9a0797a872d8015ba21a0691ebf895dbe28b624ebcd1af62b3533b84a
+RUN rm -rf /app/static && mkdir -p /app/static
+COPY frontend/build/ /app/static/
+COPY backend/version.txt /app/version.txt
+COPY backend/apps/api/version.txt /app/apps/api/version.txt

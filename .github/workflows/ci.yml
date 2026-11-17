@@ -149,7 +149,7 @@ jobs:
       uses: docker/build-push-action@v7
       with:
         context: .
-        file: ./Dockerfile
+        file: ./Dockerfile.frontend-validation
         platforms: ${{ matrix.platform }}
         labels: ${{ steps.meta.outputs.labels }}
         cache-from: type=local,src=/tmp/.buildx-cache
